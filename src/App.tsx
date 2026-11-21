@@ -168,6 +168,18 @@ export default function App() {
     clearUrlHash();
   }, [guideFrom]);
 
+  // A same-document navigation to #guide (pasting the URL while the app is
+  // already open) does not remount the app, so listen for it explicitly.
+  useEffect(() => {
+    const onHashChange = () => {
+      if (window.location.hash !== '#guide') return;
+      setGuideFrom((prev) => (view === 'studio' ? 'studio' : view === 'landing' ? 'landing' : prev));
+      setView('guide');
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, [view]);
+
   /* ---------------------------------------------------------------- gpu */
   useEffect(() => {
     let alive = true;
