@@ -1,4 +1,4 @@
-import type { Affine, DofKey, HeatmapMode, SearchConfig } from './config';
+import type { Affine, DofKey, HeatmapMode, Objective, SearchConfig } from './config';
 import { DOF_META, DOF_ORDER, binOf, dofValueLabel, enabledDofs } from './config';
 
 /** rectangle of a grid in data space (cell edges at integers) */
@@ -20,6 +20,8 @@ export interface SearchResult {
   bestIndex: number;
   elapsedMs: number;
   mode: 'grid' | 'stochastic';
+  /** metric used to produce `scores` */
+  objective: Objective;
   /** per-seed refinement trajectories (stochastic mode) */
   paths: Affine[][];
 }

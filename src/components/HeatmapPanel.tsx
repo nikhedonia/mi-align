@@ -97,6 +97,7 @@ export function HeatmapPanel(props: Props) {
     !!selectedInfo && !!exploredByLayer.get(selectedInfo.levelId)?.has(`${selectedInfo.cell.x},${selectedInfo.cell.y}`);
 
   const gradient = Array.from({ length: 24 }, (_, i) => heatCss(i / 23)).join(',');
+  const metric = result?.objective === 'mi' ? 'NMI' : 'NCC';
 
   return (
     <section className="card">
@@ -226,7 +227,9 @@ export function HeatmapPanel(props: Props) {
             <span className="dim">{legendLo.toFixed(3)}</span>
             <div className="legendBar" style={{ background: `linear-gradient(90deg, ${gradient})` }} />
             <span className="dim">{legendHi.toFixed(3)}</span>
-            <span className="legendNote">{layers.length > 1 ? 'shared across levels' : 'NCC − penalty'}</span>
+            <span className="legendNote">
+              {layers.length > 1 ? `shared across levels · ${metric} − penalty` : `${metric} − penalty`}
+            </span>
           </div>
 
           <div className={`readout ${hovered || selected ? 'on' : ''}`}>

@@ -1,8 +1,8 @@
 import { matOfAffine } from '../lib/affine';
-import type { Affine, Limits } from '../lib/config';
+import type { Affine, Limits, Objective } from '../lib/config';
 import type { Img } from '../lib/image';
 import type { SampleSet } from '../lib/sampling';
-import { EVAL_WGSL, MEASURE_WGSL, UNIFORM_FLOATS } from './evalShader';
+import { EVAL_WGSL, MEASURE_WGSL, MI_EVAL_WGSL, UNIFORM_FLOATS } from './evalShader';
 import { uploadTexture } from './device';
 
 export interface Measure {
@@ -65,6 +65,9 @@ export class Aligner {
   private measureHist: GPUBuffer;
   private measureRead: GPUBuffer;
   private measureChain: Promise<unknown> = Promise.resolve();
+  private evalChain: Promise<unknown> = Promise.resolve();
+  private miEvalPipeline: GPUComputePipeline | null = null;
+  private miEvalGroup: GPUBindGroup | null = null;
 
   constructor(
     private device: GPUDevice,
@@ -210,27 +213,70 @@ export class Aligner {
   }
 
   /**
-   * Evaluate `n` candidate transforms (packed as n*6 affine params).
-   * Returns n*ROW_STRIDE floats.
+   * The MI scorer is created lazily: NCC users never pay for the extra
+   * pipeline, and a failure in the MI shader cannot break the default path.
    */
-  async evaluate(params: Float32Array, n: number): Promise<Float32Array> {
+  private ensureMiEval(): { pipeline: GPUComputePipeline; group: GPUBindGroup } {
+    if (this.miEvalPipeline && this.miEvalGroup) {
+      return { pipeline: this.miEvalPipeline, group: this.miEvalGroup };
+    }
+    const module = this.device.createShaderModule({ code: MI_EVAL_WGSL, label: 'align-eval-mi' });
+    const pipeline = this.device.createComputePipeline({
+      label: 'align-eval-mi',
+      layout: 'auto',
+      compute: { module, entryPoint: 'main' },
+    });
+    const group = this.device.createBindGroup({
+      label: 'eval-mi-bind-group',
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.uniformBuf } },
+        { binding: 1, resource: this.texture.createView() },
+        { binding: 2, resource: this.sampler },
+        { binding: 3, resource: { buffer: this.candBuf } },
+        { binding: 4, resource: { buffer: this.posBuf } },
+        { binding: 5, resource: { buffer: this.lumaBuf } },
+        { binding: 6, resource: { buffer: this.outBuf } },
+      ],
+    });
+    this.miEvalPipeline = pipeline;
+    this.miEvalGroup = group;
+    return { pipeline, group };
+  }
+
+  /**
+   * Evaluate `n` candidate transforms (packed as n*6 affine params).
+   * Returns n*ROW_STRIDE floats. `objective = 'mi'` uses normalised mutual
+   * information minus the same overlap penalty; it is much slower.
+   */
+  async evaluate(params: Float32Array, n: number, objective: Objective = 'ncc'): Promise<Float32Array> {
     if (this.disposed) throw new Error('__cancelled');
     if (this.lost) throw new Error(`GPU device lost: ${this.lost}`);
     if (this.failed) throw new Error('GPU stopped responding earlier in this session — reload to recover');
     this.inFlight++;
     try {
-      return await this.evaluateInner(params, n);
+      // The candidate/readback buffers are shared, so evaluations must be
+      // serialised even if a caller accidentally starts two runs at once.
+      const run = () => this.evaluateInner(params, n, objective);
+      const p = this.evalChain.then(run, run);
+      this.evalChain = p.then(
+        () => undefined,
+        () => undefined,
+      );
+      return await p;
     } finally {
       this.inFlight--;
       if (this.disposed && this.inFlight === 0) this.destroyNow();
     }
   }
 
-  private async evaluateInner(params: Float32Array, n: number): Promise<Float32Array> {
+  private async evaluateInner(params: Float32Array, n: number, objective: Objective): Promise<Float32Array> {
     const device = this.device;
     const out = new Float32Array(n * ROW_STRIDE);
     const cap = this.chunk;
     const u = new Uint32Array(this.uniformData.buffer);
+    const { pipeline, group } =
+      objective === 'mi' ? this.ensureMiEval() : { pipeline: this.pipeline, group: this.bindGroup };
 
     for (let start = 0; start < n; start += cap) {
       if (this.disposed) throw new Error('__cancelled');
@@ -264,9 +310,9 @@ export class Aligner {
       writeF32(device, this.uniformBuf, this.uniformData);
 
       const enc = device.createCommandEncoder();
-      const pass = enc.beginComputePass({ label: 'align-eval' });
-      pass.setPipeline(this.pipeline);
-      pass.setBindGroup(0, this.bindGroup);
+      const pass = enc.beginComputePass({ label: objective === 'mi' ? 'align-eval-mi' : 'align-eval' });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, group);
       pass.dispatchWorkgroups(m);
       pass.end();
       const bytes = m * ROW_STRIDE * 4;

@@ -36,10 +36,13 @@ examples. Every example ships with an exact ground truth transform, so the error
 | `a`      | aspect (sx/sy)                              |
 | `sh`     | shear                                       |
 
-The number of candidates is the product of the enabled axes' step counts. Each candidate is scored
-against image B with a zero-mean NCC over a fixed set of sampled source pixels, minus an overlap
-penalty. One workgroup per candidate, 128 invocations striding over the samples, tree-reduced in
-shared memory. Batches of 8192 candidates stream through the GPU with a progress bar.
+The number of candidates is the product of the enabled axes' step counts. By default each candidate
+is scored against image B with a zero-mean NCC over a fixed set of sampled source pixels, minus an
+overlap penalty. One workgroup per candidate, 128 invocations striding over the samples, tree-reduced
+in shared memory. Batches of 8192 candidates stream through the GPU with a progress bar. The search
+panel can switch the objective to **mutual information** (`NMI − penalty`); that kernel gives every
+candidate its own 32×32 joint histogram, so it is much slower but tolerant of monotonic intensity
+changes and different imaging modalities.
 
 **Stochastic multi-start** — optionally, draw `N` random candidates, keep the `K` best that are far
 apart, then run a batched compass search from every seed (all seeds probe all axes in a single
@@ -89,7 +92,11 @@ histogram) updates live, so you can feel how sharp the optimum is.
 **Mutual information** — a separate single-transform kernel builds a 32×32 joint intensity histogram
 in workgroup memory and reports MI in bits, normalised MI, both entropies, NCC and overlap. MI is
 insensitive to monotonic brightness changes, so it is the honest multimodal readout; the joint
-histogram is drawn next to it and tightens into a diagonal as the images line up.
+histogram is drawn next to it and tightens into a diagonal as the images line up. The same histogram
+can drive the search itself: set the objective to `MI (NMI)` in the search panel. That path is
+opt-in and much slower than NCC because it clears and updates 1,024 bins for every candidate.
+Switching the objective resets the detail pyramid and re-runs the root search, since scores from the
+two metrics are not comparable.
 
 **Overlay modes** — blend, absolute difference, checkerboard, A only, B only.
 
@@ -106,7 +113,7 @@ src/
     examples.ts     procedural scenes, two-viewpoint rendering, exact ground truth
     image.ts        file loading + canvas plumbing
   gpu/
-    evalShader.ts   WGSL: per-candidate scorer + single-transform MI measurement
+    evalShader.ts   WGSL: per-candidate NCC/MI scorers + single-transform MI measurement
     aligner.ts      pipelines, buffers, chunked streams, readback
     warp.ts         render pipeline for the warped overlay
   components/       landing, panels, heatmap canvas, warp canvas, MI panel
@@ -184,6 +191,7 @@ Tracked events:
 - `image_load` (`slot`: a|b), `image_swap`
 - `search_run`, `search_complete` (`strategy`, `dofs`, `candidates`, `samples`, `best_score`)
 - `heatmap_dive`, `heatmap_subdivide`, `heatmap_axis`, `heatmap_mode`
+- `objective_change` (`ncc` | `mi`)
 - `auto_refine_toggle`, `optimum_pick`, `polish`
 - `webgpu_unavailable`, `search_error`
 
@@ -198,8 +206,9 @@ Local testing: `VITE_GA_MEASUREMENT_ID=G-XXXXXXX npm run dev`.
 
 - `test/smoke.ts` — GPU pipeline end to end: scores the true transform vs decoys, runs a full grid +
   refinement (recovers the truth to ~0.06% of the image radius), checks the heatmap projection,
-  optima detection, slice mode, stochastic search, MI (higher at the truth, histogram sums to the
-  sample count, entropy bounds), the renderer pixels, and evaluates the ground truth of every example.
+  optima detection, slice mode, stochastic search, the MI readout and MI search objective (higher at
+  the truth, histogram sums to the sample count, entropy bounds), the renderer pixels, and evaluates
+  the ground truth of every example.
 - `scripts/ui-check.mjs` — landing page, opening the differing-size example, the suggested search
   space, live MI, drag/rotate/scale/zoom interactions, free heatmap pan/zoom with view-following
   re-search (coverage + readable cell size after settling), select/dive/back, shared palette,

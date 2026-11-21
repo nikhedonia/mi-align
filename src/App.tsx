@@ -13,7 +13,7 @@ import { INITIAL_CAMERA, type Camera, type Cell, type Target } from './component
 import { initGPU, type GPUEnv } from './gpu/device';
 import { Aligner, type Measure } from './gpu/aligner';
 import { DEFAULT_VIEW, type ViewOpts } from './gpu/warp';
-import type { Affine, DofKey, HeatmapMode, SearchConfig } from './lib/config';
+import type { Affine, DofKey, HeatmapMode, Objective, SearchConfig } from './lib/config';
 import {
   DOF_META,
   DOF_ORDER,
@@ -62,6 +62,7 @@ function signatureOf(imgA: string | null, imgB: string | null, cfg: SearchConfig
     b: imgB,
     sampling: cfg.sampling,
     limits: cfg.limits,
+    objective: cfg.objective,
     dofs: cfg.dofs,
     mode: cfg.mode,
     stochastic: cfg.stochastic,
@@ -238,6 +239,7 @@ export default function App() {
     const sigNow = signatureOf(imgIdsRef.current.a, imgIdsRef.current.b, cfgNow);
     track('search_run', {
       strategy: cfgNow.mode,
+      objective: cfgNow.objective,
       dofs: enabledDofs(cfgNow).length,
       candidates: planGrid(cfgNow).count,
       samples: al.sampleCount,
@@ -246,7 +248,7 @@ export default function App() {
       const r = await runSearch({
         evaluate: (p, n) => {
           if (alignerRef.current !== al) throw new Error('__cancelled');
-          return al.evaluate(p, n);
+          return al.evaluate(p, n, cfgNow.objective);
         },
         batch: BATCH,
         cfg: cfgNow,
@@ -257,6 +259,7 @@ export default function App() {
       });
       track('search_complete', {
         strategy: cfgNow.mode,
+        objective: cfgNow.objective,
         candidates: r.count,
         best_score: Number(bestOf(r).score.toFixed(4)),
       });
@@ -480,6 +483,29 @@ export default function App() {
     setFrames((fs) => fs.map((f, i) => (i === fs.length - 1 ? { ...f, cfg: fn(f.cfg) } : f)));
   }, []);
 
+  /**
+   * Switching the objective changes the meaning of every stored score, so the
+   * detail pyramid is reset and the root space is re-run with the new metric.
+   */
+  const onObjective = useCallback(
+    (objective: Objective) => {
+      const root = framesRef.current[0];
+      if (running || !root || root.cfg.objective === objective) return;
+      track('objective_change', { objective });
+      const id = frameIdRef.current++;
+      const cfgNext = { ...root.cfg, objective };
+      setFrames([
+        { id, cfg: cfgNext, result: null, signature: null, cell: null, root: null, label: 'full space', explored: [] },
+      ]);
+      setCamera(INITIAL_CAMERA);
+      setPicked(null);
+      setHover(null);
+      setSelected(null);
+      setQueued({ id, cfg: cfgNext });
+    },
+    [running],
+  );
+
   const onAxis = useCallback(
     (axis: 'x' | 'y', key: DofKey) => {
       track('heatmap_axis', { axis, key });
@@ -653,7 +679,10 @@ export default function App() {
     track('polish');
     setPolishing(true);
     try {
-      const out = await polish({ evaluate: (p, n) => al.evaluate(p, n), batch: BATCH, cfg: frameRef.current.cfg }, viewTransform);
+      const out = await polish(
+        { evaluate: (p, n) => al.evaluate(p, n, frameRef.current.cfg.objective), batch: BATCH, cfg: frameRef.current.cfg },
+        viewTransform,
+      );
       if (out) setPicked(out.params);
     } catch {
       /* ignore */
@@ -750,6 +779,7 @@ export default function App() {
               disabled={!canRun}
               stale={stale}
               onChange={patchCfg}
+              onObjective={onObjective}
               onRun={() => void runFrame(frame.id, cfg)}
               onStop={() => {
                 stopRef.current = true;
@@ -852,8 +882,9 @@ export default function App() {
             />
             <div className="card foot">
               <p className="hint tight">
-                Score = zero-mean NCC between sampled pixels of A (mapped through the candidate transform) and the
-                target B, minus an overlap penalty.{' '}
+                {result?.objective === 'mi'
+                  ? 'Score = normalised mutual information (NMI) between sampled pixels of A (mapped through the candidate transform) and the target B, minus an overlap penalty.'
+                  : 'Score = zero-mean NCC between sampled pixels of A (mapped through the candidate transform) and the target B, minus an overlap penalty.'}{' '}
                 {samples ? `${samples.count.toLocaleString()} source samples` : ''}
                 {samples?.capped ? ' (capped)' : ''}.
               </p>

@@ -28,7 +28,7 @@ export function StatsPanel({ result, cfg, viewTransform, truth, polishing, onPol
           <div className="scoreHero">
             <div>
               <div className="scoreValue">{best.score.toFixed(4)}</div>
-              <div className="dim tiny">score</div>
+              <div className="dim tiny">{result.objective === 'mi' ? 'NMI − penalty' : 'NCC − penalty'}</div>
             </div>
             <div className="scoreSplit">
               <div>
@@ -83,6 +83,10 @@ export function StatsPanel({ result, cfg, viewTransform, truth, polishing, onPol
             <div>
               <span className="k">strategy</span>
               <span className="v">{result.mode === 'grid' ? 'exhaustive grid' : 'stochastic multi-start'}</span>
+            </div>
+            <div>
+              <span className="k">objective</span>
+              <span className="v">{result.objective === 'mi' ? 'normalised MI' : 'zero-mean NCC'}</span>
             </div>
           </div>
 

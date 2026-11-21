@@ -1,4 +1,4 @@
-import type { Affine, DofKey, SearchConfig } from './config';
+import type { Affine, DofKey, Objective, SearchConfig } from './config';
 import { DOF_META, DOF_ORDER, IDENTITY, affineAtPlan, enabledDofs, planGrid } from './config';
 import type { SearchResult } from './heatmap';
 import { makeRng } from './rng';
@@ -100,7 +100,7 @@ class Store {
     return best;
   }
 
-  finish(mode: 'grid' | 'stochastic', paths: Affine[][], elapsedMs: number): SearchResult {
+  finish(mode: 'grid' | 'stochastic', paths: Affine[][], elapsedMs: number, objective: Objective): SearchResult {
     let bestIndex = 0;
     for (let i = 1; i < this.count; i++) if (this.scores[i] > this.scores[bestIndex]) bestIndex = i;
     return {
@@ -112,6 +112,7 @@ class Store {
       bestIndex,
       elapsedMs,
       mode,
+      objective,
       paths,
     };
   }
@@ -297,7 +298,7 @@ async function runGrid(opts: RunOptions, started: number): Promise<SearchResult>
     }
   }
 
-  return store.finish('grid', paths, performance.now() - started);
+  return store.finish('grid', paths, performance.now() - started, cfg.objective);
 }
 
 /* ------------------------------------------------------------------ */
@@ -373,7 +374,7 @@ async function runStochastic(opts: RunOptions, started: number): Promise<SearchR
   );
 
   const paths = refined.map((s) => s.path);
-  const result = store.finish('stochastic', paths, performance.now() - started);
+  const result = store.finish('stochastic', paths, performance.now() - started, cfg.objective);
 
   // make sure the best converged seed is reported as the winner
   let bi = result.bestIndex;

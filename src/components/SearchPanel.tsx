@@ -1,4 +1,4 @@
-import type { Affine, DofKey, SamplingMode, SearchConfig, SearchMode } from '../lib/config';
+import type { Affine, DofKey, Objective, SamplingMode, SearchConfig, SearchMode } from '../lib/config';
 import { DOF_META, DOF_ORDER, formatCount, planGrid } from '../lib/config';
 import { NumInput } from './NumInput';
 
@@ -11,11 +11,24 @@ interface Props {
   disabled: boolean;
   stale: boolean;
   onChange: (fn: (c: SearchConfig) => SearchConfig) => void;
+  onObjective: (objective: Objective) => void;
   onRun: () => void;
   onStop: () => void;
 }
 
-export function SearchPanel({ cfg, current, sampleCount, running, progress, disabled, stale, onChange, onRun, onStop }: Props) {
+export function SearchPanel({
+  cfg,
+  current,
+  sampleCount,
+  running,
+  progress,
+  disabled,
+  stale,
+  onChange,
+  onObjective,
+  onRun,
+  onStop,
+}: Props) {
   const plan = planGrid(cfg);
   const total = plan.count;
   const dofCount = plan.keys.length;
@@ -162,6 +175,38 @@ export function SearchPanel({ cfg, current, sampleCount, running, progress, disa
           onChange={(v) => onChange((c) => ({ ...c, sampling: { ...c.sampling, seed: Math.round(v) } }))}
         />
       </div>
+
+      <h3>Objective</h3>
+      <div className="segmented">
+        <button
+          className={cfg.objective === 'ncc' ? 'active' : ''}
+          onClick={() => onObjective('ncc')}
+          disabled={running}
+          title="Zero-mean NCC minus the overlap penalty — the fast default"
+        >
+          NCC (fast)
+        </button>
+        <button
+          className={cfg.objective === 'mi' ? 'active' : ''}
+          onClick={() => onObjective('mi')}
+          disabled={running}
+          title="Normalised mutual information minus the overlap penalty"
+        >
+          MI (NMI)
+        </button>
+      </div>
+      <p className="hint">
+        {cfg.objective === 'mi'
+          ? 'Each candidate builds its own 32×32 joint histogram. MI is much more robust to brightness and modality changes, but far slower than NCC.'
+          : 'Five sums per candidate, no histogram. NCC is the fast default and works well for the generated examples.'}
+      </p>
+      <p className="hint tight">Switching objective resets the detail pyramid and re-runs the root search.</p>
+      {cfg.objective === 'mi' ? (
+        <div className="warn">
+          MI scoring is expensive: expect a much longer run, especially above a few thousand candidates. Reduce
+          candidates or samples, or start with the stochastic strategy.
+        </div>
+      ) : null}
 
       <h3>Strategy</h3>
       <div className="segmented">

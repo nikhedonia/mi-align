@@ -154,6 +154,241 @@ fn main(
 }
 `;
 
+/**
+ * Candidate scorer with the mutual-information objective.
+ *
+ * Same workgroup-per-candidate shape as the NCC kernel, but each candidate
+ * builds its own 32x32 joint intensity histogram in workgroup memory. The
+ * score is normalised MI minus the same overlap penalty:
+ *
+ *   out[i*8 + 0] = score   (NMI - penalty; < -2 means rejected)
+ *   out[i*8 + 1] = ncc     (still computed, for the result panel)
+ *   out[i*8 + 2] = overlap
+ *   out[i*8 + 3] = meanA
+ *   out[i*8 + 4] = meanB
+ *   out[i*8 + 5] = MI (bits)
+ *   out[i*8 + 6] = NMI
+ *   out[i*8 + 7] = valid sample count
+ */
+export const MI_EVAL_WGSL = /* wgsl */ `
+struct Uniforms {
+  count: u32,
+  sampleCount: u32,
+  _p0: u32,
+  _p1: u32,
+  imgBWidth: f32,
+  imgBHeight: f32,
+  rB: f32,
+  minValid: f32,
+  overlapPenalty: f32,
+  _p2: f32,
+  _p3: f32,
+  _p4: f32,
+};
+
+@group(0) @binding(0) var<uniform> U: Uniforms;
+@group(0) @binding(1) var texB: texture_2d<f32>;
+@group(0) @binding(2) var sampB: sampler;
+@group(0) @binding(3) var<storage, read> candidates: array<f32>;
+@group(0) @binding(4) var<storage, read> samplePos: array<vec2f>;
+@group(0) @binding(5) var<storage, read> sampleLuma: array<f32>;
+@group(0) @binding(6) var<storage, read_write> outv: array<f32>;
+
+const WG: u32 = 128u;
+const BINS: u32 = 32u;
+const NB: u32 = BINS * BINS;
+
+var<workgroup> hist: array<atomic<u32>, 1024>;
+var<workgroup> rowAcc: array<atomic<u32>, 32>;
+var<workgroup> colAcc: array<atomic<u32>, 32>;
+var<workgroup> s_sa: array<f32, 128>;
+var<workgroup> s_sb: array<f32, 128>;
+var<workgroup> s_sab: array<f32, 128>;
+var<workgroup> s_saa: array<f32, 128>;
+var<workgroup> s_sbb: array<f32, 128>;
+var<workgroup> s_cnt: array<f32, 128>;
+var<workgroup> s_mi: array<f32, 128>;
+var<workgroup> s_ha: array<f32, 128>;
+var<workgroup> s_hb: array<f32, 128>;
+
+@compute @workgroup_size(128)
+fn main(
+  @builtin(workgroup_id) wid: vec3u,
+  @builtin(local_invocation_index) lid: u32,
+) {
+  let ci = wid.x;
+  let isActive = ci < U.count;
+
+  for (var i = lid; i < NB; i = i + WG) {
+    atomicStore(&hist[i], 0u);
+  }
+  for (var i = lid; i < BINS; i = i + WG) {
+    atomicStore(&rowAcc[i], 0u);
+    atomicStore(&colAcc[i], 0u);
+  }
+  workgroupBarrier();
+
+  let b = ci * 8u;
+  let m0 = candidates[b + 0u];
+  let m1 = candidates[b + 1u];
+  let m2 = candidates[b + 2u];
+  let m3 = candidates[b + 3u];
+  let tx = candidates[b + 4u];
+  let ty = candidates[b + 5u];
+
+  var sa = 0.0;
+  var sb = 0.0;
+  var sab = 0.0;
+  var saa = 0.0;
+  var sbb = 0.0;
+  var cnt = 0.0;
+
+  if (isActive) {
+    let kx = U.rB / U.imgBWidth;
+    let ky = U.rB / U.imgBHeight;
+    for (var i = lid; i < U.sampleCount; i = i + WG) {
+      let p = samplePos[i];
+      let xb = m0 * p.x + m1 * p.y + tx;
+      let yb = m2 * p.x + m3 * p.y + ty;
+      let u = 0.5 + xb * kx;
+      let v = 0.5 + yb * ky;
+      if (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0) {
+        let c = textureSampleLevel(texB, sampB, vec2f(u, v), 0.0);
+        let lb = dot(c.rgb, vec3f(0.299, 0.587, 0.114));
+        let la = sampleLuma[i];
+        sa = sa + la;
+        sb = sb + lb;
+        sab = sab + la * lb;
+        saa = saa + la * la;
+        sbb = sbb + lb * lb;
+        cnt = cnt + 1.0;
+        let ai = min(BINS - 1u, u32(max(0.0, la) * f32(BINS)));
+        let bi = min(BINS - 1u, u32(max(0.0, lb) * f32(BINS)));
+        atomicAdd(&hist[bi * BINS + ai], 1u);
+      }
+    }
+  }
+
+  s_sa[lid] = sa;
+  s_sb[lid] = sb;
+  s_sab[lid] = sab;
+  s_saa[lid] = saa;
+  s_sbb[lid] = sbb;
+  s_cnt[lid] = cnt;
+  workgroupBarrier();
+
+  // correlation sums first, so every lane knows the valid sample count n
+  var stride = WG / 2u;
+  loop {
+    if (stride == 0u) { break; }
+    if (lid < stride) {
+      s_sa[lid] = s_sa[lid] + s_sa[lid + stride];
+      s_sb[lid] = s_sb[lid] + s_sb[lid + stride];
+      s_sab[lid] = s_sab[lid] + s_sab[lid + stride];
+      s_saa[lid] = s_saa[lid] + s_saa[lid + stride];
+      s_sbb[lid] = s_sbb[lid] + s_sbb[lid + stride];
+      s_cnt[lid] = s_cnt[lid] + s_cnt[lid + stride];
+    }
+    workgroupBarrier();
+    stride = stride / 2u;
+  }
+
+  // row / column marginals from the joint histogram
+  for (var i = lid; i < NB; i = i + WG) {
+    let v = atomicLoad(&hist[i]);
+    if (v > 0u) {
+      atomicAdd(&rowAcc[i / BINS], v);
+      atomicAdd(&colAcc[i % BINS], v);
+    }
+  }
+  workgroupBarrier();
+
+  let n = s_cnt[0];
+  var mi = 0.0;
+  var ha = 0.0;
+  var hb = 0.0;
+  if (n > 0.0) {
+    for (var i = lid; i < NB; i = i + WG) {
+      let v = atomicLoad(&hist[i]);
+      if (v == 0u) {
+        continue;
+      }
+      let pb = f32(atomicLoad(&rowAcc[i / BINS])) / n;
+      let pa = f32(atomicLoad(&colAcc[i % BINS])) / n;
+      let p = f32(v) / n;
+      mi = mi + p * log2(p / (pa * pb));
+    }
+    for (var j = lid; j < BINS; j = j + WG) {
+      let pb = f32(atomicLoad(&rowAcc[j])) / n;
+      if (pb > 0.0) {
+        hb = hb - pb * log2(pb);
+      }
+      let pa = f32(atomicLoad(&colAcc[j])) / n;
+      if (pa > 0.0) {
+        ha = ha - pa * log2(pa);
+      }
+    }
+  }
+  s_mi[lid] = mi;
+  s_ha[lid] = ha;
+  s_hb[lid] = hb;
+  workgroupBarrier();
+
+  var stride2 = WG / 2u;
+  loop {
+    if (stride2 == 0u) { break; }
+    if (lid < stride2) {
+      s_mi[lid] = s_mi[lid] + s_mi[lid + stride2];
+      s_ha[lid] = s_ha[lid] + s_ha[lid + stride2];
+      s_hb[lid] = s_hb[lid] + s_hb[lid + stride2];
+    }
+    workgroupBarrier();
+    stride2 = stride2 / 2u;
+  }
+
+  if (lid == 0u) {
+    let tot = s_cnt[0];
+    var ncc = 0.0;
+    var overlap = 0.0;
+    var score = -3.0;
+    var miOut = 0.0;
+    var nmi = 0.0;
+    var meanA = 0.0;
+    var meanB = 0.0;
+    if (tot >= 8.0) {
+      overlap = tot / f32(U.sampleCount);
+      meanA = s_sa[0] / tot;
+      meanB = s_sb[0] / tot;
+      let va = max(s_saa[0] - s_sa[0] * s_sa[0] / tot, 0.0);
+      let vb = max(s_sbb[0] - s_sb[0] * s_sb[0] / tot, 0.0);
+      let cov = s_sab[0] - s_sa[0] * s_sb[0] / tot;
+      let den = sqrt(va * vb);
+      if (den > 1e-7) {
+        ncc = cov / den;
+      }
+      miOut = s_mi[0];
+      let ha = max(s_ha[0], 1e-6);
+      let hb = max(s_hb[0], 1e-6);
+      nmi = (2.0 * miOut) / (ha + hb);
+      score = nmi - U.overlapPenalty * (1.0 - overlap);
+      if (overlap < U.minValid) {
+        score = -2.0 - (U.minValid - overlap) * 4.0;
+      }
+    }
+
+    let o = ci * 8u;
+    outv[o + 0u] = score;
+    outv[o + 1u] = ncc;
+    outv[o + 2u] = overlap;
+    outv[o + 3u] = meanA;
+    outv[o + 4u] = meanB;
+    outv[o + 5u] = miOut;
+    outv[o + 6u] = nmi;
+    outv[o + 7u] = tot;
+  }
+}
+`;
+
 export const UNIFORM_FLOATS = 12;
 
 /**

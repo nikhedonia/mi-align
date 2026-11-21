@@ -408,7 +408,7 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
 
       <section className="guide__hero">
         <div className="guide__hero-copy">
-          <p className="guide__eyebrow">Affine alignment · NCC · mutual information · WebGPU</p>
+          <p className="guide__eyebrow">Affine alignment · NCC / MI objectives · WebGPU</p>
           <h1>See the whole landscape.</h1>
           <p className="guide__lede">
             Image alignment is usually framed as an optimisation: start somewhere, follow a gradient, hope the
@@ -562,16 +562,22 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
               </div>
             </div>
             <div className="guide-callout">
-              <strong>NCC is the search objective; MI is the honest readout.</strong> The dense scan uses NCC
-              because it is cheap and precise for the examples. Mutual information is computed separately for the
-              transform currently on screen, so you can check whether the alignment still holds when brightness
-              changes.
+              <strong>NCC is the default search objective.</strong> The dense scan uses NCC because it is cheap and
+              precise for the examples. You can switch the search to normalised MI in the search panel — it is much
+              slower, but more robust to brightness and modality changes. MI is always available as the live readout
+              for the transform currently on screen.
             </div>
           </section>
 
           <section id="mutual-information" className="guide-section">
             <p className="guide-section__eyebrow">03 · Joint mutual information</p>
             <h2>Do the two images tell you about each other?</h2>
+            <p>
+              <strong>This is both a readout and an optional search objective.</strong> By default the brute-force
+              scan and the heatmap are scored with NCC − penalty. Switch <em>Objective</em> to <em>MI (NMI)</em> in
+              the search panel to score every candidate with normalised MI − penalty instead. MI is also measured
+              separately for the transform currently on screen.
+            </p>
             <p>
               Mutual information asks a different question from correlation. Not “do the intensities rise
               together?” but “how much does knowing the intensity in A reduce the uncertainty about the intensity
@@ -592,6 +598,11 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
             </p>
             <Formula>NMI = 2 · I(A;B) / (H(A) + H(B))</Formula>
             <p>
+              When the MI objective is selected, the search score is <code>NMI − λ · (1 − overlap)</code>. NMI is
+              bounded, so it compares candidates with different overlap more fairly than raw MI in bits; the panel
+              still reports both.
+            </p>
+            <p>
               The joint histogram is the picture to keep in mind. If the images are aligned, a bright pixel in A
               tends to pair with a bright pixel in B, and the histogram collapses onto a diagonal. If they are
               misaligned, the pairs are scrambled and the histogram spreads out. MI measures how far the joint
@@ -600,14 +611,66 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
             <Figure caption="Aligned images concentrate probability mass on the diagonal; misalignment spreads it. MI drops as the joint histogram approaches the product of the marginals.">
               <HistogramDiagram />
             </Figure>
+            <h3>Feature matching vs. intensity-based alignment</h3>
+            <p>
+              Feature-based registration finds distinctive keypoints or tie points, matches descriptors between
+              the two images, and estimates a transform from those correspondences. It is fast and precise when
+              both images contain the same repeatable features. It becomes unreliable when the features are hard
+              to detect or match, when repeated structure creates ambiguous matches, or when a feature is present
+              in only one of the images.
+            </p>
+            <p>
+              MI is an <strong>area-based</strong> metric. It compares the joint distribution of intensities over
+              the overlapping pixels, so it does not need a feature detector or a set of one-to-one
+              correspondences. That is what makes it useful when the moving and fixed images come from different
+              modalities: a visible-light photograph and an X-ray, thermal or XRF element map can show entirely
+              different features, yet their intensities are still statistically dependent when the images are
+              aligned.
+            </p>
+            <div className="guide-grid guide-grid--2">
+              <div className="guide-card">
+                <span className="guide-card__tag">When features fail</span>
+                <h3>No shared points to match</h3>
+                <p>
+                  Different modalities often highlight different physical properties. Craquelure may be visible in
+                  raking light but absent from an element map; a pigment may dominate an XRF map while being
+                  indistinguishable in the visible image. With no reliable common keypoints, the feature-matching
+                  step has nothing to estimate a transform from.
+                </p>
+              </div>
+              <div className="guide-card">
+                <span className="guide-card__tag">What MI costs</span>
+                <h3>Histogram per candidate</h3>
+                <p>
+                  MI is expensive because it is built from a joint intensity histogram, marginals and entropy
+                  sums. In the search, every candidate needs its own histogram work; the NCC kernel only needs five
+                  running sums. That is why MI runs are substantially slower and why the MI objective is opt-in.
+                </p>
+              </div>
+            </div>
+            <div className="guide-callout">
+              <strong>Worked example: multimodal artwork registration.</strong>{' '}
+              <a
+                href="https://www.spiedigitallibrary.org/conference-proceedings-of-spie/12620/1262004/Multimodal-image-registration-and-mosaicking-of-artworks--an-approach/10.1117/12.2673427.short"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Villafañe et al., Proc. SPIE 12620, 1262004 (2023)
+              </a>{' '}
+              register macro X-ray fluorescence (MA-XRF) element maps of paintings to the visible image using
+              mutual information. The modalities may share no common features, so the feature-based methods used
+              in art investigation are often ineffective here. Their method scores transformations by the average
+              MI across a stack of element maps and progressively refines the alignment.{' '}
+              <span className="dim">doi:10.1117/12.2673427</span>
+            </div>
             <div className="guide-grid guide-grid--2">
               <div className="guide-card">
                 <span className="guide-card__tag">Why it matters</span>
                 <h3>Beyond brightness</h3>
                 <p>
-                  MI is invariant under monotonic intensity remapping and does not assume a linear relationship. A
-                  thermal camera and an optical camera can be aligned even when their intensities are not
-                  comparable at all.
+                  MI is invariant under monotonic intensity remapping and does not assume a linear relationship.
+                  A visible-light photograph, a thermal image and an X-ray or element map can be aligned even when
+                  their intensities and visible features are not comparable at all.
                 </p>
               </div>
               <div className="guide-card">
@@ -616,7 +679,8 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
                 <p>
                   The measurement kernel bins both images into 32 intensity levels, builds a 32×32 joint histogram
                   in workgroup memory with atomics, derives the marginals, and reports MI in bits plus both
-                  entropies. The histogram is drawn next to the value.
+                  entropies. The histogram is drawn next to the value. The MI search objective uses the same
+                  histogram, but one workgroup per candidate.
                 </p>
               </div>
             </div>
@@ -663,6 +727,11 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
               real work, not a guess. Because each candidate is an independent workgroup, the GPU can keep many
               workgroups in flight and hide memory latency.
             </p>
+            <p>
+              The optional MI objective keeps the same workgroup-per-candidate shape, but gives every candidate a
+              private 32×32 joint histogram. That means clearing and atomically updating 1,024 bins per candidate
+              instead of five sums, which is why MI is opt-in and much slower.
+            </p>
             <div className="guide-grid guide-grid--3">
               <div className="guide-card">
                 <h3>Search kernel</h3>
@@ -674,8 +743,9 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
               <div className="guide-card">
                 <h3>MI kernel</h3>
                 <p>
-                  One workgroup for a single transform. Builds a 32×32 joint histogram with atomics, then reduces
-                  MI, NMI, entropies, NCC and overlap.
+                  One workgroup for a single transform (the live readout), or one workgroup per candidate when the
+                  MI objective is selected. Builds a 32×32 joint histogram with atomics, then reduces MI, NMI,
+                  entropies, NCC and overlap.
                 </p>
               </div>
               <div className="guide-card">
@@ -803,6 +873,15 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
                   scale.
                 </p>
               </div>
+              <div className="guide-card">
+                <h3>Choosing an objective</h3>
+                <p>
+                  <strong>NCC</strong> is the fast default. <strong>MI (NMI)</strong> swaps the per-candidate score
+                  for normalised mutual information, which shrugs off monotonic brightness changes. Expect a much
+                  longer run: every candidate needs its own joint histogram. Switching objective resets the detail
+                  pyramid and re-runs the root search.
+                </p>
+              </div>
             </div>
           </section>
 
@@ -851,6 +930,9 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
               </a>
               <a href="https://en.wikipedia.org/wiki/Image_registration" target="_blank" rel="noreferrer">
                 Image registration
+              </a>
+              <a href="https://doi.org/10.1117/12.2673427" target="_blank" rel="noreferrer">
+                MI registration of multimodal artworks
               </a>
               <a href="https://en.wikipedia.org/wiki/WebGPU" target="_blank" rel="noreferrer">
                 WebGPU

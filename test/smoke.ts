@@ -110,6 +110,22 @@ async function main() {
   check('truth ncc is high', nccOf(0) > 0.85, { ncc: nccOf(0), overlap: rows[2] });
   check('identity ncc is lower', nccOf(1) < nccOf(0) - 0.05, { identityNcc: nccOf(1) });
 
+  /* ---------------- mutual-information scorer ---------------- */
+  const miRows = await aligner.evaluate(batch, cands.length, 'mi');
+  check('MI scorer: truth beats identity', miRows[0] > miRows[8], {
+    truth: miRows[0].toFixed(4),
+    identity: miRows[8].toFixed(4),
+  });
+  check('MI scorer: truth beats inverted', miRows[0] > miRows[16], {
+    truth: miRows[0].toFixed(4),
+    inverted: miRows[16].toFixed(4),
+  });
+  check('MI scorer also returns NCC', miRows[1] > 0.85, { ncc: miRows[1] });
+  check('MI scorer returns MI/NMI', miRows[5] > 0 && miRows[6] > 0.15 && miRows[6] <= 1.0001, {
+    mi: miRows[5].toFixed(3),
+    nmi: miRows[6].toFixed(3),
+  });
+
   /* ---------------- exhaustive grid ---------------- */
   const cfg = tinyConfig();
   const grid = await runSearch({ evaluate: (p, n) => aligner.evaluate(p, n), batch: 8192, cfg });
@@ -121,6 +137,29 @@ async function main() {
   const ref = await polish({ evaluate: (p, n) => aligner.evaluate(p, n), batch: 8192, cfg }, gb.params, 80);
   const rerr = ref ? compareAffine(ref.params, truth) : null;
   check('refinement improves', !!rerr && rerr.pos <= gerr.pos + 1e-9 && rerr.angle <= gerr.angle + 1e-9, rerr);
+
+  /* ---------------- MI-driven grid search ---------------- */
+  {
+    const micfg = createDefaultConfig();
+    micfg.dofs.tx = { enabled: true, min: -0.2, max: 0.2, steps: 5, value: 0 };
+    micfg.dofs.ty = { enabled: true, min: -0.2, max: 0.2, steps: 5, value: 0 };
+    micfg.dofs.theta = { ...micfg.dofs.theta, enabled: true, steps: 5 };
+    micfg.dofs.scale = { ...micfg.dofs.scale, enabled: false };
+    micfg.sampling = { enabled: true, mode: 'grid', count: 1024, seed: 7 };
+    micfg.mode = 'grid';
+    micfg.refine = false;
+    micfg.objective = 'mi';
+    const migrid = await runSearch({ evaluate: (p, n) => aligner.evaluate(p, n, 'mi'), batch: 8192, cfg: micfg });
+    const mb = bestOf(migrid);
+    const merr = compareAffine(mb.params, truth);
+    check('MI objective scans the grid', migrid.count === 125, { count: migrid.count, ms: Math.round(migrid.elapsedMs) });
+    check('MI result is tagged', migrid.objective === 'mi', { objective: migrid.objective });
+    check('MI objective finds the peak', merr.pos < 6 && merr.angle < 4, merr);
+    check('MI result still has NCC/overlap', Number.isFinite(mb.ncc) && mb.overlap > 0.5, {
+      ncc: mb.ncc,
+      overlap: mb.overlap,
+    });
+  }
 
   /* ---------------- heatmap + optima ---------------- */
   const hm = buildHeatmap(grid, cfg, 'tx', 'ty', 'projection');

@@ -113,6 +113,8 @@ export const DOF_META: Record<DofKey, DofMeta> = {
 export type SamplingMode = 'grid' | 'random' | 'gradient';
 export type SearchMode = 'grid' | 'stochastic';
 export type HeatmapMode = 'projection' | 'slice';
+/** per-candidate scoring objective */
+export type Objective = 'ncc' | 'mi';
 
 export interface SamplingConfig {
   enabled: boolean;
@@ -153,6 +155,8 @@ export interface SearchConfig {
   dofs: Record<DofKey, DofConfig>;
   sampling: SamplingConfig;
   mode: SearchMode;
+  /** what each candidate is scored with; MI is much more expensive */
+  objective: Objective;
   stochastic: StochasticConfig;
   refine: boolean;
   limits: Limits;
@@ -175,6 +179,7 @@ export function createDefaultConfig(): SearchConfig {
     dofs,
     sampling: { enabled: true, mode: 'grid', count: 2048, seed: 1234 },
     mode: 'grid',
+    objective: 'ncc',
     stochastic: { samples: 4096, seeds: 12, iterations: 44 },
     refine: true,
     limits: { minOverlap: 0.3, overlapPenalty: 0.35 },
