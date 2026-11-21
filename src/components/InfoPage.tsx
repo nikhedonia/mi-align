@@ -754,6 +754,17 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
               private 32×32 joint histogram. That means clearing and atomically updating 1,024 bins per candidate
               instead of five sums, which is why MI is opt-in and much slower.
             </p>
+            <p>
+              This is why the app uses WebGPU rather than WebGL. A WebGL fragment shader is tied to the pixel it
+              renders and has no compute stage, storage buffers, workgroup shared memory, atomics or arbitrary
+              scatter; general computation becomes a chain of render-to-texture passes. The search here needs one
+              workgroup per candidate, a shared reduction and, for MI, a per-candidate histogram with atomics.
+              WebGPU exposes those primitives directly, so the programming model matches the computation:
+              dispatch a workgroup per candidate, stride lanes over samples, reduce in shared memory and write one
+              score row. The companion article{' '}
+              <a href="https://nikhedonia.net/articles/challenges-of-webgl">The Challenges of WebGL</a> walks
+              through the constraints in detail.
+            </p>
             <div className="guide-grid guide-grid--3">
               <div className="guide-card">
                 <h3>Search kernel</h3>
