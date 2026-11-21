@@ -613,42 +613,62 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
             </Figure>
             <h3>Feature matching vs. intensity-based alignment</h3>
             <p>
-              Feature-based registration finds distinctive keypoints or tie points, matches descriptors between
-              the two images, and estimates a transform from those correspondences. It is fast and precise when
-              both images contain the same repeatable features. It becomes unreliable when the features are hard
-              to detect or match, when repeated structure creates ambiguous matches, or when a feature is present
-              in only one of the images.
+              Feature-based registration detects corners, edges or blob-like landmarks (Harris/FAST, SIFT, ORB,
+              or manually picked tie points), matches descriptors between the images, and estimates a transform
+              from the resulting correspondences, usually with a robust estimator such as RANSAC. When the
+              images come from the same modality and overlap enough, this is excellent: panoramic stitching,
+              multi-view RGB, repeated scans and slight exposure or scale changes all produce plenty of shared,
+              repeatable features, and a sparse set of good matches is enough to recover the geometry precisely.
             </p>
             <p>
-              MI is an <strong>area-based</strong> metric. It compares the joint distribution of intensities over
-              the overlapping pixels, so it does not need a feature detector or a set of one-to-one
-              correspondences. That is what makes it useful when the moving and fixed images come from different
-              modalities: a visible-light (RGB) photograph and an X-ray, thermal or XRF element map can show
-              entirely different features, yet their intensities are still statistically dependent when the
-              images are aligned.
+              The assumption breaks when the images are cross-modality. A visible-light (RGB) photograph and an
+              X-ray, thermal or XRF element map highlight different physical properties: a feature that is strong
+              in one image may be invisible in the other, and the remaining descriptor matches can be dominated
+              by false positives. RANSAC can reject outliers when the inliers are the majority, but it cannot
+              recover a transform from correspondences that do not exist. MI sidesteps the correspondence problem
+              entirely: it compares the joint intensity distribution over the whole overlap, so it can still find
+              the alignment when there are no shared landmarks to match.
             </p>
-            <div className="guide-grid guide-grid--2">
-              <div className="guide-card">
-                <span className="guide-card__tag">When features fail</span>
-                <h3>No shared points to match</h3>
-                <p>
-                  Different modalities often highlight different physical properties. Craquelure may be visible in
-                  raking light but absent from an element map; a pigment may dominate an XRF map while being
-                  indistinguishable in the visible image. With no reliable common keypoints, the feature-matching
-                  step has nothing to estimate a transform from.
-                </p>
-              </div>
-              <div className="guide-card">
-                <span className="guide-card__tag">What MI costs</span>
-                <h3>Histogram per candidate</h3>
-                <p>
-                  MI is expensive because it is built from a joint intensity histogram, marginals and entropy
-                  sums. In the search, every candidate needs its own histogram work; the NCC kernel only needs five
-                  running sums. That is why MI runs are substantially slower and why the MI objective is opt-in.
-                  The payoff is robustness in exactly the cases where feature matching has nothing reliable to
-                  match.
-                </p>
-              </div>
+            <div className="guide-table-wrap">
+              <table className="guide-table">
+                <thead>
+                  <tr>
+                    <th>Situation</th>
+                    <th>Feature matching (SIFT/ORB + RANSAC)</th>
+                    <th>Entropy / MI</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Panorama stitching, multi-view RGB</td>
+                    <td>Usually the best first choice: plentiful shared corners and edges; a sparse set of matches is enough.</td>
+                    <td>Works, but is usually unnecessary and much slower.</td>
+                  </tr>
+                  <tr>
+                    <td>Same modality, exposure or scale changes</td>
+                    <td>Often good after contrast normalisation; repeated textures can still produce false matches.</td>
+                    <td>Handles monotonic intensity changes; useful when features are weak or repetitive.</td>
+                  </tr>
+                  <tr>
+                    <td>RGB vs. X-ray / thermal / XRF</td>
+                    <td>Fragile: landmarks are not shared, descriptors produce false positives, and RANSAC may have too few inliers.</td>
+                    <td>Better fit: scores the whole overlap without needing any feature correspondences.</td>
+                  </tr>
+                  <tr>
+                    <td>Repeated or low-texture structure</td>
+                    <td>Ambiguous: many candidate matches, few unique inliers; manual tie points may be needed.</td>
+                    <td>Still needs signal, but avoids the discrete matching failure; featureless overlaps remain hard.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div className="guide-callout">
+              <strong>Feature matching is not obsolete — MI is the expensive fallback.</strong> For
+              same-modality overlap, corner and edge landmarks, SIFT/ORB descriptors and RANSAC are fast,
+              precise and well understood. MI becomes the better tool when the correspondence assumption itself
+              is the problem: cross-modality pairs, features that are not shared, or too many false positives for
+              robust estimation. The price is the joint histogram and entropy sums: every candidate needs its own
+              32×32 histogram instead of five running sums, which is why MI is opt-in.
             </div>
             <div className="guide-callout">
               <strong>Worked example: multimodal artwork registration.</strong>{' '}
