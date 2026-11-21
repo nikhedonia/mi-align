@@ -411,10 +411,13 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
           <p className="guide__eyebrow">Affine alignment · NCC / MI objectives · WebGPU</p>
           <h1>See the whole landscape.</h1>
           <p className="guide__lede">
-            Image alignment is usually framed as an optimisation: start somewhere, follow a gradient, hope the
-            optimum is nearby. This app does the opposite. It scores a whole grid of candidate transforms at once
-            on the GPU and then draws the score landscape, so you can see the global optimum, the competing local
-            optima, and the ridges between them.
+            The standard approach to image alignment is to detect distinctive features, match them between the
+            images, and estimate a homography from the resulting correspondences. That works when the images
+            share repeatable features and enough of them survive robust matching. It fails when the features are
+            not shared, are repeated, or are too sparse — and then there is no correspondence set from which to
+            estimate the geometry. This app takes a different route: it scores a whole grid of candidate
+            transforms at once on the GPU and draws the score landscape, so you can see the global optimum, the
+            competing local optima, and the ridges between them.
           </p>
           <div className="guide__hero-actions">
             <button type="button" className="guide__button guide__button--primary" onClick={onBack}>
@@ -563,9 +566,9 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
             </div>
             <div className="guide-callout">
               <strong>NCC is the default search objective.</strong> The dense scan uses NCC because it is cheap and
-              precise for the examples. You can switch the search to normalised MI in the search panel — it is much
-              slower, but more robust to brightness and modality changes. MI is always available as the live readout
-              for the transform currently on screen.
+              precise for the examples. You can switch the search to an entropy-based objective (normalised MI)
+              in the search panel — it is much slower, but more robust to brightness and modality changes. MI is
+              always available as the live readout for the transform currently on screen.
             </div>
           </section>
 
@@ -573,10 +576,10 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
             <p className="guide-section__eyebrow">03 · Joint mutual information</p>
             <h2>Do the two images tell you about each other?</h2>
             <p>
-              <strong>This is both a readout and an optional search objective.</strong> By default the brute-force
-              scan and the heatmap are scored with NCC − penalty. Switch <em>Objective</em> to <em>MI (NMI)</em> in
-              the search panel to score every candidate with normalised MI − penalty instead. MI is also measured
-              separately for the transform currently on screen.
+              <strong>This is both a readout and an entropy-based search objective.</strong> By default the
+              brute-force scan and the heatmap are scored with NCC − penalty. Switch <em>Objective</em> to
+              <em>MI (NMI)</em> in the search panel to score every candidate with normalised MI − penalty instead.
+              MI is also measured separately for the transform currently on screen.
             </p>
             <p>
               Mutual information asks a different question from correlation. Not “do the intensities rise
@@ -598,7 +601,8 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
             </p>
             <Formula>NMI = 2 · I(A;B) / (H(A) + H(B))</Formula>
             <p>
-              When the MI objective is selected, the search score is <code>NMI − λ · (1 − overlap)</code>. NMI is
+              When the entropy-based objective is selected, the search score is
+              <code>NMI − λ · (1 − overlap)</code>. NMI is
               bounded, so it compares candidates with different overlap more fairly than raw MI in bits; the panel
               still reports both.
             </p>
@@ -663,12 +667,13 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
               </table>
             </div>
             <div className="guide-callout">
-              <strong>Feature matching is not obsolete — MI is the expensive fallback.</strong> For
-              same-modality overlap, corner and edge landmarks, SIFT/ORB descriptors and RANSAC are fast,
-              precise and well understood. MI becomes the better tool when the correspondence assumption itself
-              is the problem: cross-modality pairs, features that are not shared, or too many false positives for
-              robust estimation. The price is the joint histogram and entropy sums: every candidate needs its own
-              32×32 histogram instead of five running sums, which is why MI is opt-in.
+              <strong>Feature matching is not obsolete — entropy-based methods are the expensive
+              fallback.</strong> For same-modality overlap, corner and edge landmarks, SIFT/ORB descriptors and
+              RANSAC are fast, precise and well understood. Entropy-based methods become the better tool when the
+              correspondence assumption itself is the problem: cross-modality pairs, features that are not
+              shared, or too many false positives for robust estimation. The price is the joint histogram and
+              entropy sums: every candidate needs its own 32×32 histogram instead of five running sums, which is
+              why it is much slower than NCC.
             </div>
             <div className="guide-callout">
               <strong>Worked example: multimodal artwork registration.</strong>{' '}
@@ -701,8 +706,8 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
                 <p>
                   The measurement kernel bins both images into 32 intensity levels, builds a 32×32 joint histogram
                   in workgroup memory with atomics, derives the marginals, and reports MI in bits plus both
-                  entropies. The histogram is drawn next to the value. The MI search objective uses the same
-                  histogram, but one workgroup per candidate.
+                  entropies. The histogram is drawn next to the value. The entropy-based search objective uses the
+                  same histogram, but one workgroup per candidate.
                 </p>
               </div>
             </div>
@@ -750,9 +755,9 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
               workgroups in flight and hide memory latency.
             </p>
             <p>
-              The optional MI objective keeps the same workgroup-per-candidate shape, but gives every candidate a
-              private 32×32 joint histogram. That means clearing and atomically updating 1,024 bins per candidate
-              instead of five sums, which is why MI is opt-in and much slower.
+              The entropy-based MI objective keeps the same workgroup-per-candidate shape, but gives every
+              candidate a private 32×32 joint histogram. That means clearing and atomically updating 1,024 bins
+              per candidate instead of five sums, which is why it is much slower than NCC.
             </p>
             <p>
               This is why the app uses WebGPU rather than WebGL. A WebGL fragment shader is tied to the pixel it
@@ -777,8 +782,8 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
                 <h3>MI kernel</h3>
                 <p>
                   One workgroup for a single transform (the live readout), or one workgroup per candidate when the
-                  MI objective is selected. Builds a 32×32 joint histogram with atomics, then reduces MI, NMI,
-                  entropies, NCC and overlap.
+                  entropy-based objective is selected. Builds a 32×32 joint histogram with atomics, then reduces
+                  MI, NMI, entropies, NCC and overlap.
                 </p>
               </div>
               <div className="guide-card">

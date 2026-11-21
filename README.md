@@ -93,8 +93,8 @@ histogram) updates live, so you can feel how sharp the optimum is.
 in workgroup memory and reports MI in bits, normalised MI, both entropies, NCC and overlap. MI is
 insensitive to monotonic brightness changes, so it is the honest multimodal readout; the joint
 histogram is drawn next to it and tightens into a diagonal as the images line up. The same histogram
-can drive the search itself: set the objective to `MI (NMI)` in the search panel. That path is
-opt-in and much slower than NCC because it clears and updates 1,024 bins for every candidate.
+can drive the search itself: set the objective to `MI (NMI)` in the search panel. That
+entropy-based path is much slower than NCC because it clears and updates 1,024 bins for every candidate.
 Switching the objective resets the detail pyramid and re-runs the root search, since scores from the
 two metrics are not comparable. MI is especially useful for multimodal pairs where feature-based
 matching has no reliable correspondences — for example a visible-light image against an X-ray or

@@ -190,20 +190,20 @@ export function SearchPanel({
           className={cfg.objective === 'mi' ? 'active' : ''}
           onClick={() => onObjective('mi')}
           disabled={running}
-          title="Normalised mutual information minus the overlap penalty"
+          title="Entropy-based normalised mutual information minus the overlap penalty"
         >
           MI (NMI)
         </button>
       </div>
       <p className="hint">
         {cfg.objective === 'mi'
-          ? 'Each candidate builds its own 32×32 joint histogram. MI is much more robust to brightness and modality changes, but far slower than NCC.'
+          ? 'Each candidate builds its own 32×32 joint histogram. The entropy-based MI objective is much more robust to brightness and modality changes, but far slower than NCC.'
           : 'Five sums per candidate, no histogram. NCC is the fast default and works well for the generated examples.'}
       </p>
       <p className="hint tight">Switching objective resets the detail pyramid and re-runs the root search.</p>
       {cfg.objective === 'mi' ? (
         <div className="warn">
-          MI scoring is expensive: expect a much longer run, especially above a few thousand candidates. Reduce
+          Entropy-based MI scoring is expensive: expect a much longer run, especially above a few thousand candidates. Reduce
           candidates or samples, or start with the stochastic strategy.
         </div>
       ) : null}
