@@ -1,6 +1,14 @@
 import type { Affine, DofKey, HeatmapMode, SearchConfig } from './config';
 import { DOF_ORDER, binOf, enabledDofs } from './config';
 
+/** rectangle of a grid in data space (cell edges at integers) */
+export interface DataRect {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
 export interface SearchResult {
   /** n*6 affine params, order = DOF_ORDER */
   params: Float32Array;
@@ -244,4 +252,24 @@ export function findOptima(hm: HeatmapData, result: SearchResult, maxCount = 14)
 
 export function cellOf(hm: HeatmapData, a: Affine, cfg: SearchConfig): { x: number; y: number } {
   return { x: binOf(hm.xKey, a[hm.xKey], cfg), y: binOf(hm.yKey, a[hm.yKey], cfg) };
+}
+
+/** subdivide the view whenever fewer than this many cells are on screen */
+export const SUBDIVIDE_CELLS = 25;
+
+/**
+ * Camera zoom at which the viewport holds SUBDIVIDE_CELLS cells. Past it the
+ * visible region is re-searched with the same step count over a smaller
+ * interval, so the framing is unchanged and only the resolution improves.
+ */
+export function subdivideZoom(gx: number, gy: number): number {
+  return Math.max(1.6, Math.sqrt((gx * gy) / SUBDIVIDE_CELLS));
+}
+
+/** map a data-space coordinate (cell edges at integers) to a parameter value */
+export function dataToParam(cfg: SearchConfig, key: DofKey, d: number): number {
+  const { min, max, steps } = cfg.dofs[key];
+  const n = Math.max(1, Math.round(steps));
+  if (n <= 1) return (min + max) / 2;
+  return min + ((max - min) * (d - 0.5)) / (n - 1);
 }

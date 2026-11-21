@@ -2,7 +2,7 @@
 import { initGPU } from '../src/gpu/device';
 import { Aligner } from '../src/gpu/aligner';
 import { WarpRenderer, DEFAULT_VIEW } from '../src/gpu/warp';
-import { EXAMPLES, buildExample } from '../src/lib/examples';
+import { EXAMPLES, buildExample, exampleById } from '../src/lib/examples';
 import { buildSamples } from '../src/lib/sampling';
 import { createDefaultConfig, type SearchConfig } from '../src/lib/config';
 import { matOfAffine, compareAffine } from '../src/lib/affine';
@@ -23,10 +23,10 @@ const log = (s: string) => {
 
 function tinyConfig(): SearchConfig {
   const c = createDefaultConfig();
-  c.dofs.tx = { enabled: true, min: -0.2, max: 0.2, steps: 7 };
-  c.dofs.ty = { enabled: true, min: -0.2, max: 0.2, steps: 7 };
-  c.dofs.theta = { enabled: true, min: (-12 * Math.PI) / 180, max: (12 * Math.PI) / 180, steps: 7 };
-  c.dofs.scale = { enabled: true, min: 0.92, max: 1.08, steps: 5 };
+  c.dofs.tx = { enabled: true, min: -0.2, max: 0.2, steps: 7, value: 0 };
+  c.dofs.ty = { enabled: true, min: -0.2, max: 0.2, steps: 7, value: 0 };
+  c.dofs.theta = { enabled: true, min: (-12 * Math.PI) / 180, max: (12 * Math.PI) / 180, steps: 7, value: 0 };
+  c.dofs.scale = { enabled: true, min: 0.92, max: 1.08, steps: 5, value: 1 };
   c.sampling = { enabled: true, mode: 'grid', count: 1024, seed: 7 };
   c.mode = 'grid';
   c.refine = true;
@@ -151,9 +151,60 @@ async function main() {
   const shm = buildHeatmap(sto, scfg, 'tx', 'ty', 'projection');
   check('stochastic heatmap partially covered', shm.filled > 0 && shm.filled <= 49, { filled: shm.filled });
 
+  /* ---------------- mutual information ---------------- */
+  {
+    const truthMeasure = await aligner.measure(truth);
+    const idMeasure = await aligner.measure({ tx: 0, ty: 0, theta: 0, scale: 1, aspect: 1, shear: 0 });
+    check('MI kernel returns a histogram', truthMeasure.hist.length === 1024, {
+      mi: truthMeasure.mi.toFixed(3),
+      nmi: truthMeasure.nmi.toFixed(3),
+      entropy: [truthMeasure.ha.toFixed(2), truthMeasure.hb.toFixed(2)],
+    });
+    check('MI is higher at the true alignment', truthMeasure.mi > idMeasure.mi + 0.3, {
+      truth: truthMeasure.mi.toFixed(3),
+      identity: idMeasure.mi.toFixed(3),
+    });
+    check(
+      'normalised MI is in range',
+      truthMeasure.nmi > 0.15 && truthMeasure.nmi <= 1.0001,
+      truthMeasure.nmi.toFixed(3),
+    );
+    let histSum = 0;
+    for (let i = 0; i < truthMeasure.hist.length; i++) histSum += truthMeasure.hist[i];
+    check('histogram matches valid sample count', histSum === truthMeasure.valid, {
+      histSum,
+      valid: truthMeasure.valid,
+    });
+    check('measure agrees with the scorer', Math.abs(truthMeasure.score - scoreOf(0)) < 1e-4, {
+      measure: truthMeasure.score,
+      eval: scoreOf(0),
+    });
+  }
+
+  /* ---------------- geometry of every example ---------------- */
+  for (const ex of EXAMPLES) {
+    const pair = buildExample(ex, 0.5);
+    const samples = buildSamples(pair.a, { enabled: true, mode: 'grid', count: 900, seed: 2 });
+    const al = new Aligner(gpu.device, pair.b, samples, cfg.limits, 8192);
+    const t = new Float32Array([ex.truth.tx, ex.truth.ty, ex.truth.theta, ex.truth.scale, ex.truth.aspect, ex.truth.shear]);
+    const row = await al.evaluate(t, 1);
+    check(`example "${ex.id}" truth scores high`, row[0] > 0.82, {
+      score: row[0].toFixed(3),
+      ncc: row[1].toFixed(3),
+      overlap: row[2].toFixed(3),
+      a: `${pair.a.width}x${pair.a.height}`,
+      b: `${pair.b.width}x${pair.b.height}`,
+    });
+    al.dispose();
+  }
+  check(
+    'detail example really has different sizes',
+    EXAMPLES.find((e) => e.id === 'detail')!.a.w !== EXAMPLES.find((e) => e.id === 'detail')!.b.w,
+  );
+
   /* ---------------- multi-modal example (landmarks) ---------------- */
   {
-    const lm = EXAMPLES[2];
+    const lm = exampleById('landmarks')!;
     const pair = buildExample(lm);
     const lsamples = buildSamples(pair.a, { enabled: true, mode: 'gradient', count: 900, seed: 3 });
     const laligner = new Aligner(gpu.device, pair.b, lsamples, cfg.limits, 8192);
@@ -167,10 +218,10 @@ async function main() {
       overlap: trow[2].toFixed(3),
     });
     const lcfg = tinyConfig();
-    lcfg.dofs.tx = { enabled: true, min: -0.2, max: 0.2, steps: 21 };
-    lcfg.dofs.ty = { enabled: true, min: -0.2, max: 0.2, steps: 21 };
-    lcfg.dofs.theta = { enabled: true, min: (-12 * Math.PI) / 180, max: (12 * Math.PI) / 180, steps: 17 };
-    lcfg.dofs.scale = { enabled: true, min: 0.96, max: 1.04, steps: 7 };
+    lcfg.dofs.tx = { enabled: true, min: -0.2, max: 0.2, steps: 21, value: 0 };
+    lcfg.dofs.ty = { enabled: true, min: -0.2, max: 0.2, steps: 21, value: 0 };
+    lcfg.dofs.theta = { enabled: true, min: (-8 * Math.PI) / 180, max: (8 * Math.PI) / 180, steps: 17, value: 0 };
+    lcfg.dofs.scale = { enabled: true, min: 0.95, max: 1.05, steps: 5, value: 1 };
     lcfg.refine = true;
     const lres = await runSearch({ evaluate: (p, n) => laligner.evaluate(p, n), batch: 8192, cfg: lcfg });
     const lhm = buildHeatmap(lres, lcfg, 'tx', 'ty', 'projection');

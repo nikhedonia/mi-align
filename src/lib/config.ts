@@ -126,6 +126,8 @@ export interface DofConfig {
   min: number;
   max: number;
   steps: number;
+  /** value used when the DOF is locked (disabled) */
+  value: number;
 }
 
 export interface StochasticConfig {
@@ -166,6 +168,7 @@ export function createDefaultConfig(): SearchConfig {
       min: d.min,
       max: d.max,
       steps: d.steps,
+      value: DOF_META[k].fixed,
     };
   }
   return {
@@ -214,7 +217,7 @@ export function planGrid(cfg: SearchConfig): GridPlan {
   let count = 1;
   for (const v of values) count *= v.length;
   const base: Affine = { ...IDENTITY };
-  for (const k of DOF_ORDER) if (!cfg.dofs[k].enabled) base[k] = DOF_META[k].fixed;
+  for (const k of DOF_ORDER) if (!cfg.dofs[k].enabled) base[k] = cfg.dofs[k].value;
   return { keys, values, strides, count, base };
 }
 
@@ -256,4 +259,55 @@ export function formatCount(n: number): string {
 /** compact one-line description of a full 6-DOF transform */
 export function affineSummary(a: Affine): string {
   return DOF_ORDER.map((k) => `${DOF_META[k].short} ${dofValueLabel(k, a[k])}`).join('  ');
+}
+
+/* ------------------------------------------------------------------ */
+/* exploration helpers                                                 */
+/* ------------------------------------------------------------------ */
+
+/** the parameter interval covered by one heatmap cell */
+export function cellRangeForKey(cfg: SearchConfig, key: DofKey, bin: number): { min: number; max: number } {
+  const d = cfg.dofs[key];
+  const n = Math.max(1, Math.round(d.steps));
+  if (n <= 1 || !(d.max > d.min)) return { min: d.min, max: d.max };
+  const step = (d.max - d.min) / (n - 1);
+  const v = d.min + step * bin;
+  return {
+    min: Math.max(d.min, v - step / 2),
+    max: Math.min(d.max, v + step / 2),
+  };
+}
+
+/** restrict one DOF to a sub-interval (used to dive into a heatmap cell) */
+export function narrowDof(
+  cfg: SearchConfig,
+  key: DofKey,
+  min: number,
+  max: number,
+  steps?: number,
+): SearchConfig {
+  const d = cfg.dofs[key];
+  let lo = min;
+  let hi = max;
+  if (!(hi > lo)) {
+    const mid = (lo + hi) / 2;
+    lo = mid - 1e-6;
+    hi = mid + 1e-6;
+  }
+  return {
+    ...cfg,
+    dofs: {
+      ...cfg.dofs,
+      [key]: { ...d, min: lo, max: hi, steps: steps ?? d.steps, enabled: true },
+    },
+  };
+}
+
+/** lock a DOF at a concrete value (excluded from the search) */
+export function lockDof(cfg: SearchConfig, key: DofKey, value: number): SearchConfig {
+  return { ...cfg, dofs: { ...cfg.dofs, [key]: { ...cfg.dofs[key], enabled: false, value } } };
+}
+
+export function unlockDof(cfg: SearchConfig, key: DofKey): SearchConfig {
+  return { ...cfg, dofs: { ...cfg.dofs, [key]: { ...cfg.dofs[key], enabled: true } } };
 }

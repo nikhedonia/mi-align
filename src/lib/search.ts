@@ -130,7 +130,7 @@ export function randomAffine(cfg: SearchConfig, rng: () => number): Affine {
   const a: Affine = { ...IDENTITY };
   for (const k of DOF_ORDER) {
     const d = cfg.dofs[k];
-    a[k] = d.enabled ? d.min + (d.max - d.min) * rng() : DOF_META[k].fixed;
+    a[k] = d.enabled ? d.min + (d.max - d.min) * rng() : d.value;
   }
   return a;
 }

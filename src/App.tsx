@@ -2,67 +2,141 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DataPanel } from './components/DataPanel';
 import { SearchPanel } from './components/SearchPanel';
 import { StatsPanel } from './components/StatsPanel';
-import { HeatmapPanel } from './components/HeatmapPanel';
+import { HeatmapPanel, type Crumb } from './components/HeatmapPanel';
 import { ViewBar } from './components/ViewBar';
 import { WarpCanvas } from './components/WarpCanvas';
-import type { Cell } from './components/HeatmapCanvas';
+import { MiPanel } from './components/MiPanel';
+import { Landing } from './components/Landing';
+import { INITIAL_CAMERA, type Camera, type Cell } from './components/HeatmapCanvas';
 import { initGPU, type GPUEnv } from './gpu/device';
-import { Aligner } from './gpu/aligner';
+import { Aligner, type Measure } from './gpu/aligner';
 import { DEFAULT_VIEW, type ViewOpts } from './gpu/warp';
 import type { Affine, DofKey, HeatmapMode, SearchConfig } from './lib/config';
-import { DOF_ORDER, IDENTITY, createDefaultConfig } from './lib/config';
-import type { SearchResult, HeatmapData, Optimum } from './lib/heatmap';
-import { bestOf, buildHeatmap, candidateAt, findOptima } from './lib/heatmap';
-import { EXAMPLES, buildExample, type Example } from './lib/examples';
+import {
+  DOF_META,
+  DOF_ORDER,
+  IDENTITY,
+  binOf,
+  cellRangeForKey,
+  createDefaultConfig,
+  dofValueLabel,
+  enabledDofs,
+  narrowDof,
+} from './lib/config';
+import type { HeatmapData, Optimum, SearchResult } from './lib/heatmap';
+import { bestOf, buildHeatmap, candidateAt, dataToParam, findOptima } from './lib/heatmap';
+import type { DataRect } from './lib/heatmap';
+import { buildExample, exampleById, type Example } from './lib/examples';
 import { loadImageFile, type Img } from './lib/image';
 import { buildSamples, type SampleSet } from './lib/sampling';
 import { polish, runSearch } from './lib/search';
 
 const BATCH = 8192;
 
+interface Frame {
+  id: number;
+  cfg: SearchConfig;
+  result: SearchResult | null;
+  signature: string | null;
+  /** the parent heatmap cell this frame was opened from */
+  cell: Cell | null;
+  /** region this level covers, in ROOT data coordinates (null for the root) */
+  root: DataRect | null;
+  label: string;
+  explored: Cell[];
+}
+
+function signatureOf(imgA: string | null, imgB: string | null, cfg: SearchConfig): string {
+  return JSON.stringify({
+    a: imgA,
+    b: imgB,
+    sampling: cfg.sampling,
+    limits: cfg.limits,
+    dofs: cfg.dofs,
+    mode: cfg.mode,
+    stochastic: cfg.stochastic,
+    refine: cfg.refine,
+  });
+}
+
+/** heatmap grid size a config produces (mirrors buildHeatmap) */
+function gridDims(cfg: SearchConfig): { gx: number; gy: number } {
+  const gx = Math.max(1, Math.round(cfg.dofs[cfg.heatmap.x].steps));
+  const gy =
+    enabledDofs(cfg).length > 1 && cfg.heatmap.y !== cfg.heatmap.x
+      ? Math.max(1, Math.round(cfg.dofs[cfg.heatmap.y].steps))
+      : 1;
+  return { gx, gy };
+}
+
+interface Level {
+  frame: Frame;
+  cfg: SearchConfig;
+  result: SearchResult;
+  root: DataRect;
+  hm: HeatmapData;
+}
+
+function cfgForExample(ex: Example): SearchConfig {
+  const cfg = createDefaultConfig();
+  for (const k of DOF_ORDER) {
+    const sug = ex.suggest?.[k];
+    if (!sug) continue;
+    cfg.dofs[k] = { ...cfg.dofs[k], ...sug, enabled: sug.enabled ?? true };
+  }
+  return cfg;
+}
+
 export default function App() {
   const [gpu, setGpu] = useState<GPUEnv | null>(null);
   const [gpuError, setGpuError] = useState<string | null>(null);
+  const [view, setView] = useState<'landing' | 'studio'>('landing');
 
   const [imgA, setImgA] = useState<Img | null>(null);
   const [imgB, setImgB] = useState<Img | null>(null);
   const [truth, setTruth] = useState<Affine | null>(null);
   const [activeExample, setActiveExample] = useState<string | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [busyLoad, setBusyLoad] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [cfg, setCfg] = useState<SearchConfig>(createDefaultConfig);
-  const [viewOpts, setViewOpts] = useState<ViewOpts>(DEFAULT_VIEW);
+  const frameIdRef = useRef(1);
+  const [frames, setFrames] = useState<Frame[]>(() => [
+    { id: 0, cfg: createDefaultConfig(), result: null, signature: null, cell: null, root: null, label: 'full space', explored: [] },
+  ]);
 
   const [aligner, setAligner] = useState<Aligner | null>(null);
   const [alignerError, setAlignerError] = useState<string | null>(null);
-
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [runError, setRunError] = useState<string | null>(null);
 
-  const [result, setResult] = useState<SearchResult | null>(null);
-  const [runSignature, setRunSignature] = useState<string | null>(null);
   const [hover, setHover] = useState<Cell | null>(null);
+  const [selected, setSelected] = useState<Cell | null>(null);
   const [picked, setPicked] = useState<Affine | null>(null);
+  const [camera, setCamera] = useState<Camera>(INITIAL_CAMERA);
+  const [viewOpts, setViewOpts] = useState<ViewOpts>(DEFAULT_VIEW);
+  const [measure, setMeasure] = useState<Measure | null>(null);
+  const [measuring, setMeasuring] = useState(false);
   const [polishing, setPolishing] = useState(false);
+  const [queued, setQueued] = useState<{ id: number; cfg: SearchConfig } | null>(null);
+  const [autoRefine, setAutoRefine] = useState(true);
+
+  const frame = frames[frames.length - 1];
+  const cfg = frame.cfg;
+  const result = frame.result;
 
   /* ---------------------------------------------------------------- gpu */
   useEffect(() => {
     let alive = true;
     initGPU()
-      .then((g) => {
-        if (alive) setGpu(g);
-      })
-      .catch((e: unknown) => {
-        if (alive) setGpuError(e instanceof Error ? e.message : String(e));
-      });
+      .then((g) => alive && setGpu(g))
+      .catch((e: unknown) => alive && setGpuError(e instanceof Error ? e.message : String(e)));
     return () => {
       alive = false;
     };
   }, []);
 
-  /* ---------------------------------------------------------------- samples */
+  /* ---------------------------------------------------------------- samples + evaluator */
   const samples: SampleSet | null = useMemo(() => {
     if (!imgA) return null;
     try {
@@ -72,7 +146,6 @@ export default function App() {
     }
   }, [imgA, cfg.sampling]);
 
-  /* ---------------------------------------------------------------- evaluator */
   useEffect(() => {
     if (!gpu || !imgB || !samples || samples.count === 0) {
       setAligner(null);
@@ -82,9 +155,7 @@ export default function App() {
       const a = new Aligner(gpu.device, imgB, samples, cfg.limits, BATCH);
       setAlignerError(null);
       setAligner(a);
-      return () => {
-        a.dispose();
-      };
+      return () => a.dispose();
     } catch (e) {
       setAlignerError(e instanceof Error ? e.message : String(e));
       setAligner(null);
@@ -93,44 +164,22 @@ export default function App() {
   }, [gpu, imgB, samples, cfg.limits]);
 
   const alignerRef = useRef<Aligner | null>(null);
+  const frameRef = useRef<Frame>(frame);
+  const framesRef = useRef<Frame[]>(frames);
+  const imgIdsRef = useRef<{ a: string | null; b: string | null }>({ a: null, b: null });
   useEffect(() => {
     alignerRef.current = aligner;
   }, [aligner]);
-
-  const cfgRef = useRef(cfg);
+  frameRef.current = frame;
+  framesRef.current = frames;
   useEffect(() => {
-    cfgRef.current = cfg;
-  }, [cfg]);
-
-  /* ---------------------------------------------------------------- signature */
-  const signature = useMemo(
-    () =>
-      JSON.stringify({
-        a: imgA?.id ?? null,
-        b: imgB?.id ?? null,
-        sampling: cfg.sampling,
-        limits: cfg.limits,
-        dofs: cfg.dofs,
-        mode: cfg.mode,
-        stochastic: cfg.stochastic,
-        refine: cfg.refine,
-      }),
-    [imgA, imgB, cfg],
-  );
-
-  const stale = !!result && runSignature !== signature;
-
-  /* ---------------------------------------------------------------- run */
-  const stopRef = useRef(false);
-
-  const imgAIdRef = useRef<string | null>(null);
-  const imgBIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    imgAIdRef.current = imgA?.id ?? null;
-    imgBIdRef.current = imgB?.id ?? null;
+    imgIdsRef.current = { a: imgA?.id ?? null, b: imgB?.id ?? null };
   }, [imgA, imgB]);
 
-  const run = useCallback(async () => {
+  /* ---------------------------------------------------------------- running */
+  const stopRef = useRef(false);
+
+  const runFrame = useCallback(async (frameId: number, cfgNow: SearchConfig) => {
     const al = alignerRef.current;
     if (!al) return;
     stopRef.current = false;
@@ -138,18 +187,9 @@ export default function App() {
     setRunError(null);
     setPicked(null);
     setHover(null);
+    setSelected(null);
     setProgress({ done: 0, total: 1 });
-    const cfgNow = cfgRef.current;
-    const sigNow = JSON.stringify({
-      a: imgAIdRef.current,
-      b: imgBIdRef.current,
-      sampling: cfgNow.sampling,
-      limits: cfgNow.limits,
-      dofs: cfgNow.dofs,
-      mode: cfgNow.mode,
-      stochastic: cfgNow.stochastic,
-      refine: cfgNow.refine,
-    });
+    const sigNow = signatureOf(imgIdsRef.current.a, imgIdsRef.current.b, cfgNow);
     try {
       const r = await runSearch({
         evaluate: (p, n) => {
@@ -163,8 +203,7 @@ export default function App() {
           setProgress({ done, total });
         },
       });
-      setResult(r);
-      setRunSignature(sigNow);
+      setFrames((fs) => fs.map((f) => (f.id === frameId ? { ...f, result: r, signature: sigNow } : f)));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg !== '__cancelled') setRunError(msg);
@@ -173,58 +212,123 @@ export default function App() {
     }
   }, []);
 
-  /* auto-run once per evaluator instance (new images, new sampling, ...) */
+  /* if the GPU goes away mid-session, say so instead of silently stopping */
+  useEffect(() => {
+    if (!gpu) return;
+    let alive = true;
+    gpu.device.lost.then((info) => {
+      if (!alive) return;
+      setRunning(false);
+      setGpuError(`GPU device lost (${info.reason}): ${info.message || 'the driver reset the device'}`);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [gpu]);
+
+  useEffect(() => {
+    if (!queued) return;
+    setQueued(null);
+    void runFrame(queued.id, queued.cfg);
+  }, [queued, runFrame]);
+
+  /* auto-run whenever a new evaluator appears (new images / sampling) */
   const autoRanFor = useRef<Aligner | null>(null);
   useEffect(() => {
     if (!aligner || !imgA || !imgB) return;
     if (autoRanFor.current === aligner) return;
     autoRanFor.current = aligner;
-    void run();
-  }, [aligner, imgA, imgB, run]);
-
-  /* ---------------------------------------------------------------- boot example */
-  useEffect(() => {
-    const t = setTimeout(() => {
-      const ex = EXAMPLES[0];
-      try {
-        const { a, b } = buildExample(ex);
-        setImgA(a);
-        setImgB(b);
-        setTruth(ex.truth);
-        setActiveExample(ex.id);
-      } catch (e) {
-        setLoadError(e instanceof Error ? e.message : String(e));
-      }
-    }, 20);
-    return () => clearTimeout(t);
-  }, []);
+    const top = frameRef.current;
+    void runFrame(top.id, top.cfg);
+  }, [aligner, imgA, imgB, runFrame]);
 
   /* ---------------------------------------------------------------- derived */
-  const hm: HeatmapData | null = useMemo(
-    () => (result ? buildHeatmap(result, cfg, cfg.heatmap.x, cfg.heatmap.y, cfg.heatmap.mode) : null),
-    [result, cfg],
+  // every completed level is kept as a layer of the detail pyramid, positioned
+  // in root-grid coordinates so the camera can be shared by all of them
+  const rootDims = useMemo(() => gridDims(frames[0].cfg), [frames]);
+  const rootRect: DataRect = useMemo(
+    () => ({ x0: 0, y0: 0, x1: rootDims.gx, y1: rootDims.gy }),
+    [rootDims],
   );
-
-  const optima: Optimum[] = useMemo(() => (hm && result ? findOptima(hm, result, 14) : []), [hm, result]);
-
-  const bestInfo = result ? bestOf(result) : null;
+  const levelLayers: Level[] = useMemo(
+    () =>
+      frames
+        .filter((f) => f.result !== null)
+        .map((f) => ({
+          frame: f,
+          cfg: f.cfg,
+          result: f.result as SearchResult,
+          root: f.root ?? rootRect,
+          hm: buildHeatmap(f.result as SearchResult, f.cfg, f.cfg.heatmap.x, f.cfg.heatmap.y, f.cfg.heatmap.mode),
+        })),
+    [frames, rootRect],
+  );
+  const activeLevelRef = useRef<Level | null>(null);
+  activeLevelRef.current = levelLayers.length ? levelLayers[levelLayers.length - 1] : null;
+  const layers = useMemo(() => levelLayers.map((l) => ({ hm: l.hm, root: l.root })), [levelLayers]);
+  const activeLevel = levelLayers.length ? levelLayers[levelLayers.length - 1] : null;
+  const hm: HeatmapData | null = activeLevel?.hm ?? null;
+  const activeResult: SearchResult | null = activeLevel?.result ?? null;
+  const optima: Optimum[] = useMemo(
+    () => (hm && activeResult ? findOptima(hm, activeResult, 14) : []),
+    [hm, activeResult],
+  );
+  const bestInfo = activeResult ? bestOf(activeResult) : null;
 
   const hoveredParams: Affine | null = useMemo(() => {
-    if (!hm || !result || !hover) return null;
+    if (!hm || !activeResult || !hover) return null;
     const idx = hm.argIdx[hover.y * hm.gx + hover.x];
-    return idx >= 0 ? candidateAt(result, idx) : null;
-  }, [hm, result, hover]);
+    return idx >= 0 ? candidateAt(activeResult, idx) : null;
+  }, [hm, activeResult, hover]);
 
   const current = picked ?? bestInfo?.params ?? IDENTITY;
   const viewTransform = hoveredParams ?? current;
+  const viewKey = JSON.stringify(viewTransform);
+  const stale = !!result && frame.signature !== signatureOf(imgA?.id ?? null, imgB?.id ?? null, cfg);
 
-  /* ---------------------------------------------------------------- handlers */
-  const patchCfg = useCallback((fn: (c: SearchConfig) => SearchConfig) => setCfg((c) => fn(c)), []);
+  /* live mutual information for whatever transform is displayed */
+  const measureRef = useRef(0);
+  useEffect(() => {
+    const al = alignerRef.current;
+    if (!al || !imgB) return;
+    const ticket = ++measureRef.current;
+    const raf = requestAnimationFrame(() => {
+      setMeasuring(true);
+      al.measure(viewTransform)
+        .then((m) => {
+          if (measureRef.current === ticket) {
+            setMeasure(m);
+            setMeasuring(false);
+          }
+        })
+        .catch(() => {
+          if (measureRef.current === ticket) setMeasuring(false);
+        });
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewKey, aligner, imgB]);
 
-  const loadPair = useCallback((ex: Example) => {
+  /* the camera is expressed in root-grid coordinates and only resets with the pair */
+  const pairKey = `${imgA?.id ?? ''}:${imgB?.id ?? ''}`;
+  useEffect(() => {
+    setCamera(INITIAL_CAMERA);
+    setSelected(null);
+  }, [pairKey]);
+
+  /* ---------------------------------------------------------------- actions */
+  const openExample = useCallback((ex: Example) => {
     setBusyLoad(true);
     setLoadError(null);
-    // let the spinner paint before the (synchronous) generation
+    setView('studio');
+    setFrames([
+      { id: frameIdRef.current++, cfg: cfgForExample(ex), result: null, signature: null, cell: null, root: null, label: 'full space', explored: [] },
+    ]);
+    setPicked(null);
+    setHover(null);
+    setSelected(null);
+    setMeasure(null);
+    // let the shell paint before the (synchronous) scene synthesis
     setTimeout(() => {
       try {
         const { a, b } = buildExample(ex);
@@ -232,24 +336,28 @@ export default function App() {
         setImgB(b);
         setTruth(ex.truth);
         setActiveExample(ex.id);
-        setResult(null);
-        setRunSignature(null);
-        setPicked(null);
-        if (ex.suggest) {
-          setCfg((c) => {
-            const dofs = { ...c.dofs };
-            for (const k of DOF_ORDER) {
-              if (ex.suggest && ex.suggest[k] !== undefined) dofs[k] = { ...dofs[k], enabled: !!ex.suggest[k] };
-            }
-            return { ...c, dofs };
-          });
-        }
       } catch (e) {
         setLoadError(e instanceof Error ? e.message : String(e));
       } finally {
         setBusyLoad(false);
       }
     }, 10);
+  }, []);
+
+  const newProject = useCallback(() => {
+    setView('studio');
+    setImgA(null);
+    setImgB(null);
+    setTruth(null);
+    setActiveExample(null);
+    setFrames([
+      { id: frameIdRef.current++, cfg: createDefaultConfig(), result: null, signature: null, cell: null, root: null, label: 'full space', explored: [] },
+    ]);
+    setPicked(null);
+    setHover(null);
+    setSelected(null);
+    setMeasure(null);
+    setLoadError(null);
   }, []);
 
   const onFile = useCallback(async (which: 'a' | 'b', file: File) => {
@@ -261,8 +369,7 @@ export default function App() {
       else setImgB(img);
       setTruth(null);
       setActiveExample(null);
-      setResult(null);
-      setRunSignature(null);
+      setFrames((fs) => fs.map((f) => ({ ...f, result: null, signature: null, explored: [] })));
       setPicked(null);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
@@ -275,19 +382,13 @@ export default function App() {
     setImgA(imgB);
     setImgB(imgA);
     setTruth(null);
-    setResult(null);
-    setRunSignature(null);
+    setFrames((fs) => fs.map((f) => ({ ...f, result: null, signature: null, explored: [] })));
     setPicked(null);
   }, [imgA, imgB]);
 
-  const onClickCell = useCallback(
-    (cell: Cell) => {
-      if (!hm || !result) return;
-      const idx = hm.argIdx[cell.y * hm.gx + cell.x];
-      if (idx >= 0) setPicked(candidateAt(result, idx));
-    },
-    [hm, result],
-  );
+  const patchCfg = useCallback((fn: (c: SearchConfig) => SearchConfig) => {
+    setFrames((fs) => fs.map((f, i) => (i === fs.length - 1 ? { ...f, cfg: fn(f.cfg) } : f)));
+  }, []);
 
   const onAxis = useCallback(
     (axis: 'x' | 'y', key: DofKey) =>
@@ -295,8 +396,7 @@ export default function App() {
         const next = { ...c.heatmap, [axis]: key } as SearchConfig['heatmap'];
         if (next.x === next.y) {
           const other = axis === 'x' ? 'y' : 'x';
-          const alt = DOF_ORDER.find((k) => c.dofs[k].enabled && k !== key) ?? key;
-          next[other] = alt;
+          next[other] = DOF_ORDER.find((k) => c.dofs[k].enabled && k !== key) ?? key;
         }
         return { ...c, heatmap: next };
       }),
@@ -305,12 +405,136 @@ export default function App() {
 
   const onMode = useCallback((m: HeatmapMode) => patchCfg((c) => ({ ...c, heatmap: { ...c.heatmap, mode: m } })), [patchCfg]);
 
+  const exploreCell = useCallback(
+    (cell: Cell) => {
+      const level = activeLevelRef.current;
+      if (!level || running) return;
+      const { hm: lhm, cfg: lcfg, root: lroot, result: lres } = level;
+      const idx = lhm.argIdx[cell.y * lhm.gx + cell.x];
+      // an unexplored cell has no representative transform — we still narrow the
+      // two mapped axes and leave the hidden ones at their current range
+      const base = idx >= 0 ? candidateAt(lres, idx) : null;
+      const xKey = lhm.xKey;
+      const yKey = lhm.yKey;
+      const rx = cellRangeForKey(lcfg, xKey, cell.x);
+      const ry = lhm.gy > 1 ? cellRangeForKey(lcfg, yKey, cell.y) : null;
+      let next = narrowDof(lcfg, xKey, rx.min, rx.max);
+      if (ry) next = narrowDof(next, yKey, ry.min, ry.max);
+      if (base) {
+        // freeze the hidden dimensions inside the cell that produced this value
+        for (const k of enabledDofs(lcfg)) {
+          if (k === xKey || (ry && k === yKey)) continue;
+          const b = binOf(k, base[k], lcfg);
+          const r = cellRangeForKey(lcfg, k, b);
+          next = narrowDof(next, k, r.min, r.max);
+        }
+      }
+      const id = frameIdRef.current++;
+      const xVal = base ? base[xKey] : (rx.min + rx.max) / 2;
+      const yVal = base && ry ? base[yKey] : ry ? (ry.min + ry.max) / 2 : 0;
+      const label =
+        `${DOF_META[xKey].short} ${dofValueLabel(xKey, xVal)}` +
+        (ry ? ` · ${DOF_META[yKey].short} ${dofValueLabel(yKey, yVal)}` : '');
+      // the cell's extent in root coordinates
+      const lx = (i: number) => lroot.x0 + (i / lhm.gx) * (lroot.x1 - lroot.x0);
+      const ly = (j: number) => lroot.y0 + (j / lhm.gy) * (lroot.y1 - lroot.y0);
+      const cellRoot: DataRect = { x0: lx(cell.x), y0: ly(cell.y), x1: lx(cell.x + 1), y1: ly(cell.y + 1) };
+      setFrames((fs) => {
+        const at = fs.findIndex((f) => f.id === level.frame.id);
+        const cut = at >= 0 ? at + 1 : fs.length;
+        return [
+          ...fs.slice(0, cut).map((f, i) =>
+            i === cut - 1 ? { ...f, explored: [...f.explored, cell] } : f,
+          ),
+          { id, cfg: next, result: null, signature: null, cell, root: cellRoot, label, explored: [] },
+        ];
+      });
+      setPicked(null);
+      setHover(null);
+      setSelected(null);
+      setQueued({ id, cfg: next });
+    },
+    [running],
+  );
+
+  /**
+   * Re-search exactly the visible region with the same step count. The new grid
+   * spans the same physical interval, so the camera only has to reset to "fit"
+   * and the framing is untouched — infinite zoom, no snap.
+   */
+  const subdivide = useCallback(
+    (rectRoot: DataRect) => {
+      const level = activeLevelRef.current;
+      if (running || !level) return;
+      const { hm: lhm, cfg: lcfg, root: lroot } = level;
+      // root data coords -> this level's cell coordinates
+      const toLevel = (d: number, lo: number, hi: number, n: number) => ((d - lo) / Math.max(1e-9, hi - lo)) * n;
+      const xKey = lhm.xKey;
+      const yKey = lhm.yKey;
+      const xa = dataToParam(lcfg, xKey, toLevel(rectRoot.x0, lroot.x0, lroot.x1, lhm.gx));
+      const xb = dataToParam(lcfg, xKey, toLevel(rectRoot.x1, lroot.x0, lroot.x1, lhm.gx));
+      let next = narrowDof(lcfg, xKey, Math.min(xa, xb), Math.max(xa, xb));
+      if (lhm.gy > 1) {
+        const ya = dataToParam(lcfg, yKey, toLevel(rectRoot.y0, lroot.y0, lroot.y1, lhm.gy));
+        const yb = dataToParam(lcfg, yKey, toLevel(rectRoot.y1, lroot.y0, lroot.y1, lhm.gy));
+        next = narrowDof(next, yKey, Math.min(ya, yb), Math.max(ya, yb));
+      }
+      const id = frameIdRef.current++;
+      const gain = lhm.gx / Math.max(0.2, toLevel(rectRoot.x1, lroot.x0, lroot.x1, lhm.gx) - toLevel(rectRoot.x0, lroot.x0, lroot.x1, lhm.gx));
+      setFrames((fs) => {
+        const at = fs.findIndex((f) => f.id === level.frame.id);
+        const cut = at >= 0 ? at + 1 : fs.length;
+        return [
+          ...fs.slice(0, cut),
+          {
+            id,
+            cfg: next,
+            result: null,
+            signature: null,
+            cell: null,
+            root: rectRoot,
+            label: `×${gain.toFixed(1)}`,
+            explored: [],
+          },
+        ];
+      });
+      setPicked(null);
+      setHover(null);
+      setSelected(null);
+      setQueued({ id, cfg: next });
+    },
+    [running],
+  );
+
+  const back = useCallback(() => {
+    if (frames.length <= 1) return;
+    setFrames((fs) => fs.slice(0, -1));
+    setPicked(null);
+    setHover(null);
+    setSelected(null);
+  }, [frames.length]);
+
+  const onClickCell = useCallback(
+    (cell: Cell | null) => {
+      setSelected(cell);
+      if (!hm || !activeResult || !cell) return;
+      const idx = hm.argIdx[cell.y * hm.gx + cell.x];
+      if (idx >= 0) setPicked(candidateAt(activeResult, idx));
+    },
+    [hm, activeResult],
+  );
+
+  const onManual = useCallback((a: Affine) => {
+    setHover(null);
+    setPicked(a);
+  }, []);
+
   const onPolish = useCallback(async () => {
     const al = alignerRef.current;
     if (!al || !viewTransform) return;
     setPolishing(true);
     try {
-      const out = await polish({ evaluate: (p, n) => al.evaluate(p, n), batch: BATCH, cfg: cfgRef.current }, viewTransform);
+      const out = await polish({ evaluate: (p, n) => al.evaluate(p, n), batch: BATCH, cfg: frameRef.current.cfg }, viewTransform);
       if (out) setPicked(out.params);
     } catch {
       /* ignore */
@@ -321,13 +545,34 @@ export default function App() {
 
   /* ---------------------------------------------------------------- render */
   const canRun = !!aligner && !running && !!imgA && !!imgB;
+  const crumbs: Crumb[] = frames.map((f) => ({ label: f.label }));
+  const hasSession = !!imgA && !!imgB;
+
+  if (view === 'landing') {
+    return (
+      <Landing
+        gpu={gpu}
+        gpuError={gpuError}
+        hasSession={hasSession}
+        onNew={newProject}
+        onResume={() => setView('studio')}
+        onExample={openExample}
+      />
+    );
+  }
 
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand">
+          <button className="backBtn" onClick={() => setView('landing')} title="Back to projects">
+            ←
+          </button>
           <span className="logo">mi-align</span>
-          <span className="tagline">affine image alignment · exhaustive WebGPU search</span>
+          <span className="tagline">
+            {activeExample ? exampleById(activeExample)?.label : imgA && imgB ? 'custom pair' : 'new project'}
+            {imgA && imgB ? ` · A ${imgA.width}×${imgA.height} → B ${imgB.width}×${imgB.height}` : ''}
+          </span>
         </div>
         <div className="topRight">
           {running ? <span className="chip live">searching…</span> : null}
@@ -350,6 +595,9 @@ export default function App() {
           <p className="dim">
             Try Chrome or Edge 113+, make sure hardware acceleration is enabled, and check chrome://gpu.
           </p>
+          <button className="primary" onClick={() => window.location.reload()}>
+            Reload page
+          </button>
         </div>
       ) : (
         <main className="layout">
@@ -358,22 +606,21 @@ export default function App() {
               imgA={imgA}
               imgB={imgB}
               truth={truth}
-              activeExample={activeExample}
               busy={running || busyLoad}
               onFile={onFile}
               onSwap={onSwap}
-              onExample={loadPair}
               onClearTruth={() => setTruth(null)}
             />
             <SearchPanel
               cfg={cfg}
+              current={viewTransform}
               sampleCount={samples?.count ?? 0}
               running={running}
               progress={progress}
               disabled={!canRun}
               stale={stale}
               onChange={patchCfg}
-              onRun={() => void run()}
+              onRun={() => void runFrame(frame.id, cfg)}
               onStop={() => {
                 stopRef.current = true;
               }}
@@ -387,9 +634,15 @@ export default function App() {
             <div className="card viewerCard">
               <div className="viewerHead">
                 <h2>Overlay</h2>
-                <div className="dim tiny">
-                  {hoveredParams ? 'previewing hovered cell' : picked ? 'picked transform' : 'best transform'}
-                  {imgA && imgB ? ` · A→B` : ''}
+                <div className="headRight">
+                  <span className="dim tiny">
+                    {hoveredParams ? 'previewing hovered cell' : picked ? 'manual transform' : 'best transform'}
+                  </span>
+                  {picked ? (
+                    <button className="linkBtn" onClick={() => setPicked(null)}>
+                      reset to best
+                    </button>
+                  ) : null}
                 </div>
               </div>
               <WarpCanvas
@@ -399,12 +652,30 @@ export default function App() {
                 imgB={imgB}
                 transform={viewTransform}
                 opts={viewOpts}
+                onManual={hasSession ? onManual : undefined}
               />
               <ViewBar opts={viewOpts} onChange={setViewOpts} />
+              <p className="hint tight">
+                drag the moving image to translate · <kbd>shift</kbd>+drag sideways to rotate · <kbd>ctrl</kbd>+drag
+                radially to scale · <kbd>ctrl</kbd>+scroll to zoom out
+              </p>
             </div>
+
+            <div className="card">
+              <div className="viewerHead">
+                <h2>Mutual information</h2>
+                <div className="dim tiny">live · updates while you drag</div>
+              </div>
+              <MiPanel measure={measure} pending={measuring} />
+              <p className="hint tight">
+                MI makes no assumption about brightness: a tight diagonal joint histogram means the two images agree.
+                Rotating away from the optimum smears the histogram and the value drops.
+              </p>
+            </div>
+
             <StatsPanel
-              result={result}
-              cfg={cfg}
+              result={activeResult}
+              cfg={activeLevel?.cfg ?? cfg}
               viewTransform={viewTransform}
               truth={truth}
               polishing={polishing}
@@ -415,27 +686,46 @@ export default function App() {
           <aside className="col right">
             <HeatmapPanel
               hm={hm}
+              layers={layers}
+              root={rootDims}
               optima={optima}
               cfg={cfg}
-              result={result}
+              result={activeResult}
               hover={hover}
-              picked={picked ?? bestInfo?.params ?? null}
+              selected={selected}
+              explored={new Set((activeLevel?.frame.explored ?? []).map((c) => `${c.x},${c.y}`))}
+              camera={camera}
+              current={current}
+              crumbs={crumbs}
+              autoRefine={autoRefine}
+              busy={running || !frame.result}
+              canPop={frames.length > 1}
+              onToggleAutoRefine={setAutoRefine}
+              onAutoPop={back}
+              onSubdivide={subdivide}
+              onBack={back}
               onHover={setHover}
-              onClickCell={onClickCell}
+              onSelect={onClickCell}
+              onExplore={exploreCell}
+              onCamera={setCamera}
               onAxis={onAxis}
               onMode={onMode}
-              onPickOptimum={(o) => setPicked(o.params)}
+              onPickOptimum={(o) => {
+                setPicked(o.params);
+                setSelected({ x: o.cellX, y: o.cellY });
+              }}
             />
             <div className="card foot">
               <p className="hint tight">
                 Score = zero-mean NCC between sampled pixels of A (mapped through the candidate transform) and the
-                target B, minus an overlap penalty. {samples ? `${samples.count.toLocaleString()} source samples` : ''}
+                target B, minus an overlap penalty.{' '}
+                {samples ? `${samples.count.toLocaleString()} source samples` : ''}
                 {samples?.capped ? ' (capped)' : ''}.
               </p>
               <p className="hint tight">
-                The landscape is 6-dimensional. The map above shows a 2-D shadow: each cell is the maximum score over
-                the dimensions you did not pick, so peaks are genuine local optima of the full space. Hover a cell to
-                see the hidden dimensions' best values in the overlay.
+                The landscape is 6-dimensional, so the map shows a 2-D shadow: each cell is the maximum over the
+                dimensions you did not pick. Peaks are real local optima of the full space — dive into a cell to
+                re-search just that neighbourhood, or lock axes and re-run to slice through the space.
               </p>
             </div>
           </aside>

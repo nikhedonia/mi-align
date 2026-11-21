@@ -2,18 +2,15 @@ import { useMemo, useRef } from 'react';
 import type { Affine } from '../lib/config';
 import type { Img } from '../lib/image';
 import { thumbnail } from '../lib/image';
-import { EXAMPLES, type Example } from '../lib/examples';
 import { dofValueLabel } from '../lib/config';
 
 interface Props {
   imgA: Img | null;
   imgB: Img | null;
   truth: Affine | null;
-  activeExample: string | null;
   busy: boolean;
   onFile: (which: 'a' | 'b', file: File) => void;
   onSwap: () => void;
-  onExample: (ex: Example) => void;
   onClearTruth: () => void;
 }
 
@@ -75,10 +72,13 @@ function Slot({
   );
 }
 
-export function DataPanel({ imgA, imgB, truth, activeExample, busy, onFile, onSwap, onExample, onClearTruth }: Props) {
+export function DataPanel({ imgA, imgB, truth, busy, onFile, onSwap, onClearTruth }: Props) {
   return (
     <section className="card">
       <h2>Images</h2>
+      <p className="hint tight">
+        Any size, any aspect ratio — A and B are compared in a centre-normalised space, so they do not need to match.
+      </p>
       <div className="slots">
         <Slot label="A · source" img={imgA} onFile={(f) => onFile('a', f)} />
         <Slot label="B · target" img={imgB} onFile={(f) => onFile('b', f)} />
@@ -94,21 +94,6 @@ export function DataPanel({ imgA, imgB, truth, activeExample, busy, onFile, onSw
         ) : null}
       </div>
 
-      <h3>Examples</h3>
-      <div className="examples">
-        {EXAMPLES.map((ex) => (
-          <button
-            key={ex.id}
-            className={`example ${activeExample === ex.id ? 'active' : ''}`}
-            onClick={() => onExample(ex)}
-            disabled={busy}
-            title={ex.blurb}
-          >
-            <span className="exampleTitle">{ex.label}</span>
-            <span className="exampleBlurb">{ex.blurb}</span>
-          </button>
-        ))}
-      </div>
       {truth ? (
         <div className="truth">
           <span className="truthTag">ground truth</span>

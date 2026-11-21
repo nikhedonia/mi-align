@@ -1,9 +1,10 @@
-import type { DofKey, SamplingMode, SearchConfig, SearchMode } from '../lib/config';
+import type { Affine, DofKey, SamplingMode, SearchConfig, SearchMode } from '../lib/config';
 import { DOF_META, DOF_ORDER, formatCount, planGrid } from '../lib/config';
 import { NumInput } from './NumInput';
 
 interface Props {
   cfg: SearchConfig;
+  current: Affine | null;
   sampleCount: number;
   running: boolean;
   progress: { done: number; total: number };
@@ -14,7 +15,7 @@ interface Props {
   onStop: () => void;
 }
 
-export function SearchPanel({ cfg, sampleCount, running, progress, disabled, stale, onChange, onRun, onStop }: Props) {
+export function SearchPanel({ cfg, current, sampleCount, running, progress, disabled, stale, onChange, onRun, onStop }: Props) {
   const plan = planGrid(cfg);
   const total = plan.count;
   const dofCount = plan.keys.length;
@@ -28,54 +29,82 @@ export function SearchPanel({ cfg, sampleCount, running, progress, disabled, sta
 
   return (
     <section className="card">
-      <h2>Search space</h2>
+      <h2>
+        Search space <span className="badge">{dofCount}D</span>
+      </h2>
       <p className="hint">
-        An affine transform has 6 degrees of freedom. Enable the ones you want to search; every enabled
-        axis with <em>n</em> steps contributes <em>n</em> grid values.
+        An affine transform has 6 degrees of freedom. Enable an axis to search it, or <em>lock</em> it at a fixed
+        value (⎘ copies the current value) to explore the optima around that slice.
       </p>
 
       <div className="dofTable">
         <div className="dofHead">
           <span />
-          <span>min</span>
+          <span>min / lock</span>
           <span>max</span>
           <span>steps</span>
+          <span />
         </div>
         {DOF_ORDER.map((key) => {
           const meta = DOF_META[key];
           const d = cfg.dofs[key];
+          const lockable = !!current;
           return (
-            <div className={`dofRow ${d.enabled ? 'on' : 'off'}`} key={key}>
+            <div className={`dofRow ${d.enabled ? 'on' : 'locked'}`} key={key}>
               <label className="dofLabel" title={meta.label}>
                 <input type="checkbox" checked={d.enabled} onChange={(e) => setDof(key, { enabled: e.target.checked })} />
                 <span className="dofShort">{meta.short}</span>
                 <span className="dofName">{meta.label}</span>
               </label>
-              <NumInput
-                value={d.min * meta.uiScale}
-                digits={meta.digits}
-                step={(d.max - d.min) * meta.uiScale * 0.1}
-                disabled={!d.enabled}
-                onChange={(v) => setDof(key, { min: v / meta.uiScale })}
-                suffix={meta.uiUnit}
-              />
-              <NumInput
-                value={d.max * meta.uiScale}
-                digits={meta.digits}
-                step={(d.max - d.min) * meta.uiScale * 0.1}
-                disabled={!d.enabled}
-                onChange={(v) => setDof(key, { max: v / meta.uiScale })}
-                suffix={meta.uiUnit}
-              />
-              <NumInput
-                value={d.steps}
-                digits={0}
-                min={1}
-                max={512}
-                step={1}
-                disabled={!d.enabled}
-                onChange={(v) => setDof(key, { steps: Math.round(v) })}
-              />
+              {d.enabled ? (
+                <>
+                  <NumInput
+                    value={d.min * meta.uiScale}
+                    digits={meta.digits}
+                    step={(d.max - d.min) * meta.uiScale * 0.1}
+                    onChange={(v) => setDof(key, { min: v / meta.uiScale })}
+                    suffix={meta.uiUnit}
+                  />
+                  <NumInput
+                    value={d.max * meta.uiScale}
+                    digits={meta.digits}
+                    step={(d.max - d.min) * meta.uiScale * 0.1}
+                    onChange={(v) => setDof(key, { max: v / meta.uiScale })}
+                    suffix={meta.uiUnit}
+                  />
+                  <NumInput
+                    value={d.steps}
+                    digits={0}
+                    min={1}
+                    max={512}
+                    step={1}
+                    onChange={(v) => setDof(key, { steps: Math.round(v) })}
+                  />
+                </>
+              ) : (
+                <>
+                  <span className="dofLockedVal">
+                    <NumInput
+                      value={d.value * meta.uiScale}
+                      digits={meta.digits}
+                      step={(d.max - d.min) * meta.uiScale * 0.1}
+                      onChange={(v) => setDof(key, { value: v / meta.uiScale })}
+                      suffix={meta.uiUnit}
+                    />
+                  </span>
+                  <span className="dofSpan" />
+                </>
+              )}
+              <button
+                className={`lockBtn ${d.enabled ? '' : 'on'}`}
+                title={d.enabled ? 'Lock at the current value' : 'Unlock (search this axis)'}
+                disabled={d.enabled && !lockable}
+                onClick={() =>
+                  setDof(key, d.enabled ? { enabled: false, value: current ? current[key] : d.value } : { enabled: true })
+                }
+              >
+                {d.enabled ? '⎘' : '🔒'}
+              </button>
             </div>
           );
         })}
