@@ -1,0 +1,28 @@
+{
+  "name": "mi-align-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test.mjs smoke ui-check visual-check",
+    "test:smoke": "node scripts/test.mjs smoke",
+    "test:ui": "node scripts/test.mjs ui-check",
+    "test:visual": "node scripts/test.mjs visual-check"
+  },
+  "dependencies": {
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.9",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "@webgpu/types": "^0.1.64",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.2"
+  }
+}
