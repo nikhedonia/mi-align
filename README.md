@@ -9,6 +9,7 @@ optima, and the ridges in between.
 npm install
 npm run dev        # http://localhost:5173
 npm run build      # typecheck + production build
+npm run preview    # serve the production build
 npm test           # browser test suites (headless Chrome + SwiftShader WebGPU)
 ```
 
@@ -16,6 +17,11 @@ Requires a WebGPU-capable browser (Chrome/Edge 113+). The app degrades to a clea
 WebGPU cannot start.
 
 ## What it does
+
+**Field guide** — a built-in explainer at `#guide` covers the affine search space, the NCC
+objective, joint mutual information and the 32×32 joint histogram, the WGSL workgroup kernel, the
+N-D max-projection heatmap, and a tour of the studio. It is linked from the landing page and the
+studio topbar, and can be opened directly with `/#guide`.
 
 **Landing page** — start a new project (drop your own two images) or open one of five generated
 examples. Every example ships with an exact ground truth transform, so the error is shown live.
@@ -48,21 +54,29 @@ of the landscape). Isolated peaks are therefore genuine local optima of the full
 cell resolves the hidden axes' values and previews that exact transform in the overlay. `slice at best`
 shows the true 2-D cross-section instead.
 
-**Exploration** — click a cell to select it, then *dive inside*: the whole search space is narrowed to
-that cell, the grid is re-searched, and the breadcrumb records the path. Diving re-ranges **every**
-enabled axis relative to the picked position — the two mapped axes take the cell's interval, the
-hidden axes take the interval of the candidate that produced the cell's score, and the header chips
-always show the exact ranges in force. Locked axes are untouched. Diving into a black (unexplored)
-cell works too: only the mapped axes are narrowed, leaving the hidden ones wide open.
+**Exploration** — the heatmap is a free camera over the parameter space: pan anywhere, zoom from 0.2× to
+4096×, with no clamping to where data happens to be. The grid (cells, ticks, hit testing) follows the
+pointer and the wheel instantly; the *search* catches up afterwards.
 
-The heatmap zooms with the wheel (0.3×–48×) and pans with the pointer, following it in both axes.
-Zooming is also how you descend the hierarchy: once the viewport only spans a handful of cells, the
-region under the cursor is re-searched automatically on a grid of the same resolution but over the
-cell-sized interval (so steps get ~19× finer per dive), and the camera re-frames the sub-grid.
-Zooming back out below the level's cell size climbs to the parent with the framing kept continuous,
-so the neighbouring cells reappear where you left them. `auto-refine with zoom` toggles the whole
-behaviour; the explicit `dive inside this cell →` / `← up` controls do the same thing by hand.
-Explored cells get a dashed border, never-scanned cells are drawn black.
+Every completed search is kept as a layer of a detail pyramid, positioned in root-grid coordinates.
+When navigation settles for ~340 ms, the app checks the window: if fewer than ~25 cells of the finest
+layer are on screen, or that layer covers less than ~55 % of the viewport, the visible window is
+re-searched with the same step count. The base config for that search is the deepest layer covering the
+window's centre (falling back to the root, whose parameter range then extrapolates — the space is not
+artificially bounded).
+
+So zooming in gives ~4× finer cells per level and panning to a neighbour yields its own search, while
+the older, coarser layers stay visible around/behind the refined region (dimmed, with a thin blue
+outline). Hit testing resolves against the finest layer under the pointer, so that surrounding context
+is just as clickable as the refined patch. Unexplored cells inside a finer layer are transparent, so nothing ever turns black just
+because you zoomed out — black only means "no computation covers this yet", and it fills in a moment
+later. The palette itself is computed from the cells actually on screen and shared by every layer, so
+a refined patch stays directly comparable with its coarser surroundings; the legend says
+*shared across levels*.
+
+`auto-refine with zoom` toggles the catch-up behaviour. Click a cell to select it and *dive inside* to
+re-search just that cell (hidden axes are frozen at the value that produced it); `← up` walks back down
+the stack. Explored cells get a dashed border.
 
 **Locking** — any axis can be locked at a concrete value (⎘ copies the current value) and excluded
 from the search, which is how you slice through the space and hunt for optima around a fixed rotation
@@ -96,6 +110,8 @@ src/
     aligner.ts      pipelines, buffers, chunked streams, readback
     warp.ts         render pipeline for the warped overlay
   components/       landing, panels, heatmap canvas, warp canvas, MI panel
+    InfoPage.tsx    long-form explainer page (#guide)
+  analytics.ts      optional GA4 event wrapper (VITE_GA_MEASUREMENT_ID)
   App.tsx           state machine: frames (dive stack), runs, manual edits
 test/smoke.ts       end-to-end GPU test page (real kernels, real images)
 scripts/            headless-Chrome drivers for the test suites
@@ -117,6 +133,65 @@ Examples are generated by painting one large scene and "photographing" it from t
 (different windows, zooms, sensor rotation, anisotropic stretch and shear). The ground truth is
 derived analytically from the two view matrices, then verified in the test suite by evaluating it.
 
+## Deployment
+
+The production site is built for:
+
+```text
+https://nikhedonia.net/mi-align-web/
+```
+
+`.github/workflows/deploy.yml` runs on every push to `main` or `master` (and manually via
+**Run workflow**):
+
+1. installs with `npm ci`,
+2. typechecks and builds the production bundle with Vite base `/mi-align-web/`,
+3. uploads `dist/` (including `.nojekyll`) as a GitHub Pages artifact,
+4. deploys through the `github-pages` environment.
+
+To enable it in the repository, open **Settings → Pages** and set the source to **GitHub Actions**.
+
+The `/mi-align-web/` path assumes that `nikhedonia.net` is configured as the custom domain on the
+**user/organization Pages site** (`nikhedonia.github.io`). Project sites inherit the custom domain
+and are served under `/<repository>/`. This repository therefore does **not** include a `CNAME` file:
+adding one to a project site would make GitHub Pages serve that project at the domain root instead of
+`/mi-align-web/`.
+
+To reproduce the deployed asset paths locally:
+
+```bash
+VITE_BASE=/mi-align-web/ npm run build
+VITE_BASE=/mi-align-web/ npm run preview
+```
+
+The dev server and plain `npm run build` use `/`.
+
+## Analytics
+
+GA4 is wired through `src/analytics.ts`, mirroring the paraplot setup. The deploy workflow exposes the
+repository secret **`GA_MEASUREMENT_ID`** as `VITE_GA_MEASUREMENT_ID` at build time; when it is absent
+analytics is disabled and no gtag script is loaded. Vite inlines `VITE_*` values into the bundle — a
+measurement ID is a public identifier; the secret only keeps it out of git.
+
+After adding the secret, re-run the workflow (Actions → “Deploy to GitHub Pages” → Run workflow) so
+the deployed bundle is rebuilt with it.
+
+Tracked events:
+
+- `page_view` — landing / studio / field guide (sanitised paths)
+- `guide_open`
+- `example_open` (`example` id), `new_project`, `resume_session`
+- `image_load` (`slot`: a|b), `image_swap`
+- `search_run`, `search_complete` (`strategy`, `dofs`, `candidates`, `samples`, `best_score`)
+- `heatmap_dive`, `heatmap_subdivide`, `heatmap_axis`, `heatmap_mode`
+- `auto_refine_toggle`, `optimum_pick`, `polish`
+- `webgpu_unavailable`, `search_error`
+
+No image data, file names, project names, transforms or sample values are sent. GA sets analytics
+cookies; add a consent flow if your jurisdiction requires one.
+
+Local testing: `VITE_GA_MEASUREMENT_ID=G-XXXXXXX npm run dev`.
+
 ## Tests
 
 `npm test` starts a dev server and drives headless Chrome (with SwiftShader when no GPU is present):
@@ -126,7 +201,8 @@ derived analytically from the two view matrices, then verified in the test suite
   optima detection, slice mode, stochastic search, MI (higher at the truth, histogram sums to the
   sample count, entropy bounds), the renderer pixels, and evaluates the ground truth of every example.
 - `scripts/ui-check.mjs` — landing page, opening the differing-size example, the suggested search
-  space, live MI, drag/rotate/scale/zoom interactions, heatmap zoom/pan/select/dive/back,
+  space, live MI, drag/rotate/scale/zoom interactions, free heatmap pan/zoom with view-following
+  re-search (coverage + readable cell size after settling), select/dive/back, shared palette,
   axis locking, and session resume.
 - `scripts/visual-check.mjs` — captures screenshots and asserts on region statistics: the overlay
   shows content, the heatmap has peaks and black unexplored cells, the joint histogram is drawn.

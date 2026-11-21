@@ -19,6 +19,7 @@ interface Props {
   onNew: () => void;
   onResume: () => void;
   onExample: (ex: Example) => void;
+  onGuide: () => void;
 }
 
 function truthLine(ex: Example): string {
@@ -67,7 +68,7 @@ function Pair({
   );
 }
 
-export function Landing({ gpu, gpuError, hasSession, onNew, onResume, onExample }: Props) {
+export function Landing({ gpu, gpuError, hasSession, onNew, onResume, onExample, onGuide }: Props) {
   const [previews, setPreviews] = useState<Record<string, Preview>>({});
 
   useEffect(() => {
@@ -108,6 +109,9 @@ export function Landing({ gpu, gpuError, hasSession, onNew, onResume, onExample 
         <span className={`chip ${gpuError ? 'bad' : gpu ? 'ok' : ''}`} title={gpuLabel}>
           {gpuLabel}
         </span>
+        <button className="ghost" onClick={onGuide} title="How the search and mutual information work">
+          Field guide
+        </button>
         <button className="primary" onClick={onNew}>
           New project
         </button>
@@ -125,6 +129,14 @@ export function Landing({ gpu, gpuError, hasSession, onNew, onResume, onExample 
             single pass. The result is a map of the whole similarity landscape — global optimum, competing
             local optima, and the ridges in between.
           </p>
+          <div className="landing-actions">
+            <button className="primary" onClick={onNew}>
+              Start aligning
+            </button>
+            <button className="ghost" onClick={onGuide}>
+              How it works
+            </button>
+          </div>
         </section>
 
         {gpuError ? (
@@ -192,6 +204,10 @@ export function Landing({ gpu, gpuError, hasSession, onNew, onResume, onExample 
           <span>zero-mean NCC · overlap penalty · mutual information</span>
           <span className="sep">·</span>
           <span>everything runs locally on your GPU</span>
+          <span className="sep">·</span>
+          <button className="linkBtn" onClick={onGuide}>
+            read the field guide
+          </button>
         </footer>
       </main>
     </div>

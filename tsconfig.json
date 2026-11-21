@@ -17,7 +17,7 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": false,
-    "types": ["@webgpu/types", "vite/client"]
+    "types": ["@webgpu/types", "vite/client", "node"]
   },
   "include": ["src", "test", "vite.config.ts"]
 }

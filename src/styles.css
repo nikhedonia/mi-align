@@ -765,12 +765,13 @@ input[type='range'] {
 
 .heatWrap {
   margin-top: 10px;
-  overflow-x: auto;
-  padding-bottom: 2px;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .heatCanvas {
   display: block;
+  width: 100%;
   cursor: crosshair;
   border-radius: 6px;
   border: 1px solid var(--line);
@@ -1265,6 +1266,18 @@ kbd {
   color: var(--dim);
 }
 
+.landing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: 20px;
+}
+
+.landing-foot .linkBtn {
+  align-self: center;
+  font-size: 10.5px;
+}
+
 .landing-section {
   margin-bottom: 40px;
 }
@@ -1632,32 +1645,4 @@ kbd {
   border-radius: 8px;
   padding: 8px;
   white-space: pre-wrap;
-}
-
-.refineBadge {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-top: 8px;
-  padding: 5px 9px;
-  border-radius: 7px;
-  border: 1px solid #3a4c66;
-  background: #101725;
-  color: #cfe0f5;
-  font-size: 10.5px;
-}
-
-.spinner {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  border: 2px solid rgba(110, 168, 254, 0.25);
-  border-top-color: #6ea8fe;
-  animation: spin 0.7s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
 }

@@ -7,7 +7,9 @@ import { ViewBar } from './components/ViewBar';
 import { WarpCanvas } from './components/WarpCanvas';
 import { MiPanel } from './components/MiPanel';
 import { Landing } from './components/Landing';
-import { INITIAL_CAMERA, type Camera, type Cell } from './components/HeatmapCanvas';
+import { InfoPage } from './components/InfoPage';
+import { track, trackPageView } from './analytics';
+import { INITIAL_CAMERA, type Camera, type Cell, type Target } from './components/HeatmapCanvas';
 import { initGPU, type GPUEnv } from './gpu/device';
 import { Aligner, type Measure } from './gpu/aligner';
 import { DEFAULT_VIEW, type ViewOpts } from './gpu/warp';
@@ -22,9 +24,10 @@ import {
   dofValueLabel,
   enabledDofs,
   narrowDof,
+  planGrid,
 } from './lib/config';
 import type { HeatmapData, Optimum, SearchResult } from './lib/heatmap';
-import { bestOf, buildHeatmap, candidateAt, dataToParam, findOptima } from './lib/heatmap';
+import { bestOf, buildHeatmap, candidateAt, dataToParam, describeCell, findOptima } from './lib/heatmap';
 import type { DataRect } from './lib/heatmap';
 import { buildExample, exampleById, type Example } from './lib/examples';
 import { loadImageFile, type Img } from './lib/image';
@@ -32,6 +35,13 @@ import { buildSamples, type SampleSet } from './lib/sampling';
 import { polish, runSearch } from './lib/search';
 
 const BATCH = 8192;
+
+type View = 'landing' | 'studio' | 'guide';
+
+function clearUrlHash(): void {
+  if (typeof window === 'undefined' || !window.location.hash) return;
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+}
 
 interface Frame {
   id: number;
@@ -69,6 +79,15 @@ function gridDims(cfg: SearchConfig): { gx: number; gy: number } {
   return { gx, gy };
 }
 
+interface CellInfo {
+  levelId: number;
+  cell: Cell;
+  text: string;
+  params: Affine | null;
+  score: number;
+  known: boolean;
+}
+
 interface Level {
   frame: Frame;
   cfg: SearchConfig;
@@ -90,7 +109,10 @@ function cfgForExample(ex: Example): SearchConfig {
 export default function App() {
   const [gpu, setGpu] = useState<GPUEnv | null>(null);
   const [gpuError, setGpuError] = useState<string | null>(null);
-  const [view, setView] = useState<'landing' | 'studio'>('landing');
+  const [view, setView] = useState<View>(() =>
+    typeof window !== 'undefined' && window.location.hash === '#guide' ? 'guide' : 'landing',
+  );
+  const [guideFrom, setGuideFrom] = useState<'landing' | 'studio'>('landing');
 
   const [imgA, setImgA] = useState<Img | null>(null);
   const [imgB, setImgB] = useState<Img | null>(null);
@@ -110,8 +132,8 @@ export default function App() {
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [runError, setRunError] = useState<string | null>(null);
 
-  const [hover, setHover] = useState<Cell | null>(null);
-  const [selected, setSelected] = useState<Cell | null>(null);
+  const [hover, setHover] = useState<Target | null>(null);
+  const [selected, setSelected] = useState<Target | null>(null);
   const [picked, setPicked] = useState<Affine | null>(null);
   const [camera, setCamera] = useState<Camera>(INITIAL_CAMERA);
   const [viewOpts, setViewOpts] = useState<ViewOpts>(DEFAULT_VIEW);
@@ -125,12 +147,36 @@ export default function App() {
   const cfg = frame.cfg;
   const result = frame.result;
 
+  /* ------------------------------------------------------------- analytics */
+  useEffect(() => {
+    trackPageView(view);
+    if (view !== 'guide') clearUrlHash();
+  }, [view]);
+
+  const openGuide = useCallback(() => {
+    setGuideFrom(view === 'studio' ? 'studio' : 'landing');
+    setView('guide');
+    track('guide_open');
+    if (window.location.hash !== '#guide') {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#guide`);
+    }
+  }, [view]);
+
+  const closeGuide = useCallback(() => {
+    setView(guideFrom);
+    clearUrlHash();
+  }, [guideFrom]);
+
   /* ---------------------------------------------------------------- gpu */
   useEffect(() => {
     let alive = true;
     initGPU()
       .then((g) => alive && setGpu(g))
-      .catch((e: unknown) => alive && setGpuError(e instanceof Error ? e.message : String(e)));
+      .catch((e: unknown) => {
+        if (!alive) return;
+        track('webgpu_unavailable');
+        setGpuError(e instanceof Error ? e.message : String(e));
+      });
     return () => {
       alive = false;
     };
@@ -190,6 +236,12 @@ export default function App() {
     setSelected(null);
     setProgress({ done: 0, total: 1 });
     const sigNow = signatureOf(imgIdsRef.current.a, imgIdsRef.current.b, cfgNow);
+    track('search_run', {
+      strategy: cfgNow.mode,
+      dofs: enabledDofs(cfgNow).length,
+      candidates: planGrid(cfgNow).count,
+      samples: al.sampleCount,
+    });
     try {
       const r = await runSearch({
         evaluate: (p, n) => {
@@ -203,10 +255,18 @@ export default function App() {
           setProgress({ done, total });
         },
       });
+      track('search_complete', {
+        strategy: cfgNow.mode,
+        candidates: r.count,
+        best_score: Number(bestOf(r).score.toFixed(4)),
+      });
       setFrames((fs) => fs.map((f) => (f.id === frameId ? { ...f, result: r, signature: sigNow } : f)));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg !== '__cancelled') setRunError(msg);
+      if (msg !== '__cancelled') {
+        track('search_error');
+        setRunError(msg);
+      }
     } finally {
       setRunning(false);
     }
@@ -265,7 +325,9 @@ export default function App() {
   );
   const activeLevelRef = useRef<Level | null>(null);
   activeLevelRef.current = levelLayers.length ? levelLayers[levelLayers.length - 1] : null;
-  const layers = useMemo(() => levelLayers.map((l) => ({ hm: l.hm, root: l.root })), [levelLayers]);
+  const levelLayersRef = useRef<Level[]>([]);
+  levelLayersRef.current = levelLayers;
+  const layers = useMemo(() => levelLayers.map((l) => ({ id: l.frame.id, hm: l.hm, root: l.root })), [levelLayers]);
   const activeLevel = levelLayers.length ? levelLayers[levelLayers.length - 1] : null;
   const hm: HeatmapData | null = activeLevel?.hm ?? null;
   const activeResult: SearchResult | null = activeLevel?.result ?? null;
@@ -275,11 +337,35 @@ export default function App() {
   );
   const bestInfo = activeResult ? bestOf(activeResult) : null;
 
-  const hoveredParams: Affine | null = useMemo(() => {
-    if (!hm || !activeResult || !hover) return null;
-    const idx = hm.argIdx[hover.y * hm.gx + hover.x];
-    return idx >= 0 ? candidateAt(activeResult, idx) : null;
-  }, [hm, activeResult, hover]);
+  /** resolve a hit on any layer into label + transform */
+  const infoFor = useCallback(
+    (t: Target | null): CellInfo | null => {
+      if (!t) return null;
+      const lvl = levelLayers.find((l) => l.frame.id === t.levelId);
+      if (!lvl) return null;
+      const { hm: lhm, result: lres } = lvl;
+      if (t.cell.x < 0 || t.cell.x >= lhm.gx || t.cell.y < 0 || t.cell.y >= lhm.gy) return null;
+      const idx = lhm.argIdx[t.cell.y * lhm.gx + t.cell.x];
+      return {
+        levelId: t.levelId,
+        cell: t.cell,
+        text: describeCell(lhm, t.cell),
+        params: idx >= 0 ? candidateAt(lres, idx) : null,
+        score: lhm.values[t.cell.y * lhm.gx + t.cell.x],
+        known: idx >= 0,
+      };
+    },
+    [levelLayers],
+  );
+  const hoverInfo = useMemo(() => infoFor(hover), [infoFor, hover]);
+  const selectedInfo = useMemo(() => infoFor(selected), [infoFor, selected]);
+  const exploredByLayer = useMemo(() => {
+    const m = new Map<number, Set<string>>();
+    for (const f of frames) m.set(f.id, new Set(f.explored.map((c) => `${c.x},${c.y}`)));
+    return m;
+  }, [frames]);
+
+  const hoveredParams: Affine | null = hoverInfo?.params ?? null;
 
   const current = picked ?? bestInfo?.params ?? IDENTITY;
   const viewTransform = hoveredParams ?? current;
@@ -318,6 +404,7 @@ export default function App() {
 
   /* ---------------------------------------------------------------- actions */
   const openExample = useCallback((ex: Example) => {
+    track('example_open', { example: ex.id });
     setBusyLoad(true);
     setLoadError(null);
     setView('studio');
@@ -345,6 +432,7 @@ export default function App() {
   }, []);
 
   const newProject = useCallback(() => {
+    track('new_project');
     setView('studio');
     setImgA(null);
     setImgB(null);
@@ -365,6 +453,7 @@ export default function App() {
     setLoadError(null);
     try {
       const img = await loadImageFile(file);
+      track('image_load', { slot: which });
       if (which === 'a') setImgA(img);
       else setImgB(img);
       setTruth(null);
@@ -379,6 +468,7 @@ export default function App() {
   }, []);
 
   const onSwap = useCallback(() => {
+    track('image_swap');
     setImgA(imgB);
     setImgB(imgA);
     setTruth(null);
@@ -391,7 +481,8 @@ export default function App() {
   }, []);
 
   const onAxis = useCallback(
-    (axis: 'x' | 'y', key: DofKey) =>
+    (axis: 'x' | 'y', key: DofKey) => {
+      track('heatmap_axis', { axis, key });
       patchCfg((c) => {
         const next = { ...c.heatmap, [axis]: key } as SearchConfig['heatmap'];
         if (next.x === next.y) {
@@ -399,16 +490,26 @@ export default function App() {
           next[other] = DOF_ORDER.find((k) => c.dofs[k].enabled && k !== key) ?? key;
         }
         return { ...c, heatmap: next };
-      }),
+      });
+    },
     [patchCfg],
   );
 
-  const onMode = useCallback((m: HeatmapMode) => patchCfg((c) => ({ ...c, heatmap: { ...c.heatmap, mode: m } })), [patchCfg]);
+  const onMode = useCallback(
+    (m: HeatmapMode) => {
+      track('heatmap_mode', { mode: m });
+      patchCfg((c) => ({ ...c, heatmap: { ...c.heatmap, mode: m } }));
+    },
+    [patchCfg],
+  );
 
   const exploreCell = useCallback(
-    (cell: Cell) => {
-      const level = activeLevelRef.current;
+    (target: Target) => {
+      const all = levelLayersRef.current;
+      const level = all.find((l) => l.frame.id === target.levelId) ?? activeLevelRef.current;
+      const cell = target.cell;
       if (!level || running) return;
+      track('heatmap_dive', { depth: all.length + 1 });
       const { hm: lhm, cfg: lcfg, root: lroot, result: lres } = level;
       const idx = lhm.argIdx[cell.y * lhm.gx + cell.x];
       // an unexplored cell has no representative transform — we still narrow the
@@ -464,8 +565,23 @@ export default function App() {
    */
   const subdivide = useCallback(
     (rectRoot: DataRect) => {
-      const level = activeLevelRef.current;
-      if (running || !level) return;
+      const all = levelLayersRef.current;
+      if (running || !all.length) return;
+      track('heatmap_subdivide', { layers: all.length + 1 });
+      // base the new search on the deepest level that covers the middle of the
+      // window; if we have panned outside every level, fall back to the root and
+      // let the parameter range extrapolate
+      const mx = (rectRoot.x0 + rectRoot.x1) / 2;
+      const my = (rectRoot.y0 + rectRoot.y1) / 2;
+      let baseIndex = 0;
+      for (let i = all.length - 1; i >= 0; i--) {
+        const r = all[i].root;
+        if (mx >= Math.min(r.x0, r.x1) && mx <= Math.max(r.x0, r.x1) && my >= Math.min(r.y0, r.y1) && my <= Math.max(r.y0, r.y1)) {
+          baseIndex = i;
+          break;
+        }
+      }
+      const level = all[baseIndex];
       const { hm: lhm, cfg: lcfg, root: lroot } = level;
       // root data coords -> this level's cell coordinates
       const toLevel = (d: number, lo: number, hi: number, n: number) => ((d - lo) / Math.max(1e-9, hi - lo)) * n;
@@ -480,7 +596,10 @@ export default function App() {
         next = narrowDof(next, yKey, Math.min(ya, yb), Math.max(ya, yb));
       }
       const id = frameIdRef.current++;
-      const gain = lhm.gx / Math.max(0.2, toLevel(rectRoot.x1, lroot.x0, lroot.x1, lhm.gx) - toLevel(rectRoot.x0, lroot.x0, lroot.x1, lhm.gx));
+      const spanCells = Math.abs(
+        toLevel(rectRoot.x1, lroot.x0, lroot.x1, lhm.gx) - toLevel(rectRoot.x0, lroot.x0, lroot.x1, lhm.gx),
+      );
+      const gain = lhm.gx / Math.max(0.2, spanCells);
       setFrames((fs) => {
         const at = fs.findIndex((f) => f.id === level.frame.id);
         const cut = at >= 0 ? at + 1 : fs.length;
@@ -493,7 +612,7 @@ export default function App() {
             signature: null,
             cell: null,
             root: rectRoot,
-            label: `×${gain.toFixed(1)}`,
+            label: gain >= 1.05 ? `×${gain.toFixed(1)}` : `view ${(1 / gain).toFixed(1)}× wider`,
             explored: [],
           },
         ];
@@ -515,13 +634,12 @@ export default function App() {
   }, [frames.length]);
 
   const onClickCell = useCallback(
-    (cell: Cell | null) => {
-      setSelected(cell);
-      if (!hm || !activeResult || !cell) return;
-      const idx = hm.argIdx[cell.y * hm.gx + cell.x];
-      if (idx >= 0) setPicked(candidateAt(activeResult, idx));
+    (t: Target | null) => {
+      setSelected(t);
+      const info = infoFor(t);
+      if (info?.params) setPicked(info.params);
     },
-    [hm, activeResult],
+    [infoFor],
   );
 
   const onManual = useCallback((a: Affine) => {
@@ -532,6 +650,7 @@ export default function App() {
   const onPolish = useCallback(async () => {
     const al = alignerRef.current;
     if (!al || !viewTransform) return;
+    track('polish');
     setPolishing(true);
     try {
       const out = await polish({ evaluate: (p, n) => al.evaluate(p, n), batch: BATCH, cfg: frameRef.current.cfg }, viewTransform);
@@ -548,6 +667,10 @@ export default function App() {
   const crumbs: Crumb[] = frames.map((f) => ({ label: f.label }));
   const hasSession = !!imgA && !!imgB;
 
+  if (view === 'guide') {
+    return <InfoPage onBack={closeGuide} onNew={newProject} onExample={openExample} />;
+  }
+
   if (view === 'landing') {
     return (
       <Landing
@@ -555,8 +678,12 @@ export default function App() {
         gpuError={gpuError}
         hasSession={hasSession}
         onNew={newProject}
-        onResume={() => setView('studio')}
+        onResume={() => {
+          track('resume_session');
+          setView('studio');
+        }}
         onExample={openExample}
+        onGuide={openGuide}
       />
     );
   }
@@ -576,6 +703,9 @@ export default function App() {
         </div>
         <div className="topRight">
           {running ? <span className="chip live">searching…</span> : null}
+          <button className="ghost small" onClick={openGuide} title="How the search and mutual information work">
+            Field guide
+          </button>
           {gpu ? (
             <span className="chip ok" title={gpu.info}>
               WebGPU · {gpu.info}
@@ -693,15 +823,18 @@ export default function App() {
               result={activeResult}
               hover={hover}
               selected={selected}
-              explored={new Set((activeLevel?.frame.explored ?? []).map((c) => `${c.x},${c.y}`))}
+              hoverInfo={hoverInfo}
+              selectedInfo={selectedInfo}
+              exploredByLayer={exploredByLayer}
               camera={camera}
               current={current}
               crumbs={crumbs}
               autoRefine={autoRefine}
               busy={running || !frame.result}
-              canPop={frames.length > 1}
-              onToggleAutoRefine={setAutoRefine}
-              onAutoPop={back}
+              onToggleAutoRefine={(v) => {
+                track('auto_refine_toggle', { enabled: v });
+                setAutoRefine(v);
+              }}
               onSubdivide={subdivide}
               onBack={back}
               onHover={setHover}
@@ -711,8 +844,10 @@ export default function App() {
               onAxis={onAxis}
               onMode={onMode}
               onPickOptimum={(o) => {
+                track('optimum_pick');
                 setPicked(o.params);
-                setSelected({ x: o.cellX, y: o.cellY });
+                const topId = layers.length ? layers[layers.length - 1].id : -1;
+                setSelected({ levelId: topId, cell: { x: o.cellX, y: o.cellY } });
               }}
             />
             <div className="card foot">

@@ -1,5 +1,5 @@
 import type { Affine, DofKey, HeatmapMode, SearchConfig } from './config';
-import { DOF_ORDER, binOf, enabledDofs } from './config';
+import { DOF_META, DOF_ORDER, binOf, dofValueLabel, enabledDofs } from './config';
 
 /** rectangle of a grid in data space (cell edges at integers) */
 export interface DataRect {
@@ -250,21 +250,21 @@ export function findOptima(hm: HeatmapData, result: SearchResult, maxCount = 14)
   return kept;
 }
 
+/** human-readable label of a heatmap cell in that map's own units */
+export function describeCell(hm: HeatmapData, cell: { x: number; y: number }): string {
+  const xv = hm.xValues[cell.x];
+  const label = `${DOF_META[hm.xKey].short} ${xv === undefined ? '—' : dofValueLabel(hm.xKey, xv)}`;
+  if (hm.gy <= 1) return label;
+  const yv = hm.yValues[cell.y];
+  return `${label} · ${DOF_META[hm.yKey].short} ${yv === undefined ? '—' : dofValueLabel(hm.yKey, yv)}`;
+}
+
 export function cellOf(hm: HeatmapData, a: Affine, cfg: SearchConfig): { x: number; y: number } {
   return { x: binOf(hm.xKey, a[hm.xKey], cfg), y: binOf(hm.yKey, a[hm.yKey], cfg) };
 }
 
 /** subdivide the view whenever fewer than this many cells are on screen */
 export const SUBDIVIDE_CELLS = 25;
-
-/**
- * Camera zoom at which the viewport holds SUBDIVIDE_CELLS cells. Past it the
- * visible region is re-searched with the same step count over a smaller
- * interval, so the framing is unchanged and only the resolution improves.
- */
-export function subdivideZoom(gx: number, gy: number): number {
-  return Math.max(1.6, Math.sqrt((gx * gy) / SUBDIVIDE_CELLS));
-}
 
 /** map a data-space coordinate (cell edges at integers) to a parameter value */
 export function dataToParam(cfg: SearchConfig, key: DofKey, d: number): number {

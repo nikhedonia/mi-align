@@ -190,6 +190,7 @@ check('MI tracks the manual transform', miAfter !== null && miAfter !== mi, { mi
 
 /* ---------------- heatmap: select, zoom, dive ---------------- */
 const hcanvas = await rectOf('.heatCanvas');
+const r_heat = hcanvas;
 const hx = Math.round(hcanvas.x + hcanvas.width * 0.56);
 const hy = Math.round(hcanvas.y + hcanvas.height * 0.44);
 const zoom0 = await evalJs('document.querySelector(".heatCanvas").dataset.zoom');
@@ -210,15 +211,14 @@ const cam1 = (await evalJs('document.querySelector(".heatCanvas").dataset.cam'))
 // dragging left/up must move the map with the pointer: cam.cx grows when drag dx<0, cy grows when dy>0
 check('heatmap pan follows the pointer', cam1[0] > cam0[0] && cam1[1] > cam0[1], { cam0, cam1 });
 
-// zoom back out below the fit scale
+// free zoom out, well past the "whole grid fits" scale
 await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: hx, y: hy, deltaX: 0, deltaY: 900, modifiers: 0 });
 await sleep(350);
-const zoomOut = await evalJs('document.querySelector(".heatCanvas").dataset.zoom');
-check('heatmap can zoom out past the fit', parseFloat(zoomOut) < 1, { zoomOut });
-await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: hx, y: hy, deltaX: 0, deltaY: -260, modifiers: 0 });
-await sleep(300);
+const zoomOut = parseFloat(await evalJs('document.querySelector(".heatCanvas").dataset.zoom'));
+check('zoom is not clamped to the data', zoomOut < 1, { zoomOut });
 
 // click a cell -> selection + dive button
+await waitIdle();
 await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hx, y: hy, button: 'none', buttons: 0 });
 await sleep(150);
 await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: hx, y: hy, button: 'left', clickCount: 1, buttons: 1 });
@@ -228,6 +228,7 @@ const readout = await evalJs('document.querySelector(".readout")?.textContent ??
 check('cell click selects and offers a dive', /selected/.test(readout) && /dive inside this cell/.test(readout), readout.slice(0, 90));
 
 const crumbs0 = await evalJs('document.querySelectorAll(".crumb").length');
+await waitIdle();
 await clickText('.readoutActions button', 'dive inside');
 await sleep(600);
 const crumbs1 = await evalJs('document.querySelectorAll(".crumb").length');
@@ -245,6 +246,14 @@ await sleep(500);
 const crumbs2 = await evalJs('document.querySelectorAll(".crumb").length');
 check('back returns to the parent map', crumbs2 === crumbs0, { crumbs2 });
 
+// ---- no horizontal scrollbar in the heatmap panel
+const sc = JSON.parse(
+  await evalJs(
+    `JSON.stringify({ sw: document.querySelector('.heatWrap').scrollWidth, cw: document.querySelector('.heatWrap').clientWidth, doc: document.documentElement.scrollWidth, vw: innerWidth })`,
+  ),
+);
+check('heatmap does not overflow horizontally', sc.sw <= sc.cw && sc.doc <= sc.vw, sc);
+
 // ---- zoom-driven subdivision: continuous zoom, finer grid underneath
 const chipsA = await evalJs('[...document.querySelectorAll(".spaceChip")].map(e=>e.textContent).join(" ")');
 const zoomA = parseFloat(await evalJs('document.querySelector(".heatCanvas").dataset.zoom'));
@@ -255,34 +264,79 @@ for (let i = 0; i < 2; i++) {
 const zoomMid = parseFloat(await evalJs('document.querySelector(".heatCanvas").dataset.zoom'));
 await waitIdle();
 const crumbsAuto = await evalJs('document.querySelectorAll(".crumb").length');
-const layersAuto = await evalJs('document.querySelector(".heatCanvas").dataset.layers');
 const zoomAfter = parseFloat(await evalJs('document.querySelector(".heatCanvas").dataset.zoom'));
-const chipsB = await evalJs('[...document.querySelectorAll(".spaceChip")].map(e=>e.textContent).join(" ")');
-check('zooming deep subdivides the visible region', crumbsAuto > crumbs0, { crumbs0, crumbsAuto, layersAuto });
+check('zooming deep subdivides the visible region', crumbsAuto > crumbs0, { crumbs0, crumbsAuto });
 check('zoom keeps moving (never reset)', zoomMid > zoomA && zoomAfter >= zoomMid - 0.01, { zoomA, zoomMid, zoomAfter });
+const chipsB = await evalJs('[...document.querySelectorAll(".spaceChip")].map(e=>e.textContent).join(" ")');
 check('subdivision narrows the searched range', chipsA !== chipsB, { chipsA, chipsB });
-check('the coarser level is kept as context', parseInt(layersAuto, 10) >= 2, { layersAuto });
+check('the coarser level is kept as context', parseInt(await evalJs('document.querySelector(".heatCanvas").dataset.layers'), 10) >= 2);
 
-// ---- zooming back out unwinds the pyramid, neighbours visible, no black
-const blackPct = () =>
-  evalJs(`(() => { const c = document.querySelector('.heatCanvas'); const d = c.getContext('2d').getImageData(0,0,c.width,c.height).data;
-    let black = 0, n = 0; for (let i = 0; i < d.length; i += 4) { if (d[i+3] < 10) continue; n++; if (d[i] < 10 && d[i+1] < 10 && d[i+2] < 10) black++; }
-    return +((black / Math.max(1, n)) * 100).toFixed(1); })()`);
-let crumbsOut = crumbsAuto;
-for (let i = 0; i < 10; i++) {
-  await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: hx, y: hy, deltaX: 0, deltaY: 800, modifiers: 0 });
-  await sleep(220);
-  crumbsOut = await evalJs('document.querySelectorAll(".crumb").length');
+// ---- the search window follows the viewport: coverage + readable cells
+const viewState = async () => {
+  const raw = await evalJs(
+    `JSON.stringify({ view: document.querySelector('.heatCanvas').dataset.view, active: document.querySelector('.heatCanvas').dataset.active, cells: +document.querySelector('.heatCanvas').dataset.cells })`,
+  );
+  const o = JSON.parse(raw);
+  const v = o.view.split(',').map(Number);
+  const a = o.active.split(',').map(Number);
+  const ovx = Math.max(0, Math.min(v[2], a[2]) - Math.max(v[0], a[0]));
+  const ovy = Math.max(0, Math.min(v[3], a[3]) - Math.max(v[1], a[1]));
+  const area = Math.max(1e-9, (v[2] - v[0]) * (v[3] - v[1]));
+  return { cov: (ovx * ovy) / area, cells: o.cells };
+};
+const settled = await viewState();
+check('grid adapts to the zoom level', settled.cov > 0.55 && settled.cells > 3, settled);
+
+// pan far to the side, then let the calculation catch up
+for (let k = 0; k < 3; k++) {
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: hx, y: hy, button: 'left', clickCount: 1, buttons: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: hx + 200, y: hy + 60, button: 'left', buttons: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: hx + 200, y: hy + 60, button: 'left', clickCount: 1 });
+  await sleep(900);
 }
 await waitIdle();
-const crumbsFinal = await evalJs('document.querySelectorAll(".crumb").length');
-const blackOut = await blackPct();
-check('zooming out climbs back down the pyramid', crumbsFinal < crumbsAuto, { crumbsAuto, crumbsFinal });
-check('no black holes when zooming back out', blackOut < 4, { blackOut });
+const panned = await viewState();
+check('panning re-targets the search on the visible window', panned.cov > 0.55 && panned.cells > 3, panned);
+
+// zoom all the way back out; a wider search should take over
+for (let i = 0; i < 8; i++) {
+  await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: hx, y: hy, deltaX: 0, deltaY: 800, modifiers: 0 });
+  await sleep(200);
+}
+await waitIdle();
+const zoomedOut = await viewState();
+const blackOut = await evalJs(`(() => { const c = document.querySelector('.heatCanvas'); const d = c.getContext('2d').getImageData(0,0,c.width,c.height).data;
+  let black = 0, n = 0; for (let i = 0; i < d.length; i += 4) { if (d[i+3] < 10) continue; n++; if (d[i] < 10 && d[i+1] < 10 && d[i+2] < 10) black++; }
+  return +((black / Math.max(1, n)) * 100).toFixed(1); })()`);
+check('zooming out re-targets a wider search', zoomedOut.cov > 0.55, zoomedOut);
+check('no black holes once the calculation lands', blackOut < 5, { blackOut });
 const chipsPop = await evalJs('[...document.querySelectorAll(".spaceChip")].map(e=>e.textContent).join(" ")');
 check('a coarser search space is active again', chipsPop !== chipsB, { chipsPop });
+const legendNote = await evalJs('document.querySelector(".legendNote")?.textContent ?? ""');
+check('palette is shared across levels', /shared across levels/.test(legendNote), { legendNote });
+
+// ---- the coarser context around a refined patch is still clickable
+await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: hx, y: hy, deltaX: 0, deltaY: 500, modifiers: 0 });
+await sleep(900);
+const corner = { x: Math.round(r_heat.x + r_heat.width * 0.22), y: Math.round(r_heat.y + r_heat.height * 0.3) };
+await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: corner.x, y: corner.y, button: 'none' });
+await sleep(400);
+const cornerReadout = await evalJs('document.querySelector(".readout")?.textContent ?? ""');
+check('hovering the coarse context resolves a cell', /score|unexplored/.test(cornerReadout) && !/hover a cell/.test(cornerReadout), cornerReadout.slice(0, 70));
+await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: corner.x, y: corner.y, button: 'left', clickCount: 1, buttons: 1 });
+await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: corner.x, y: corner.y, button: 'left', buttons: 0, clickCount: 1 });
+await sleep(450);
+check(
+  'clicking the coarse context selects it',
+  /dive inside this cell/.test(await evalJs('document.querySelector(".readout")?.textContent ?? ""')),
+);
 
 /* ---------------- locking an axis ---------------- */
+// unwind the pyramid so the lock test runs on the full search space again
+for (let i = 0; i < 6 && (await evalJs('document.querySelectorAll(".crumb").length')) > 1; i++) {
+  await clickText('.hmHead button', 'up');
+  await sleep(400);
+}
 await clickText('.viewerHead button', 'reset to best');
 await sleep(400);
 const countBefore = await evalJs('document.querySelector(".summary .bigNum")?.textContent');
