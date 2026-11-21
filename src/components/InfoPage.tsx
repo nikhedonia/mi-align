@@ -623,9 +623,9 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
               MI is an <strong>area-based</strong> metric. It compares the joint distribution of intensities over
               the overlapping pixels, so it does not need a feature detector or a set of one-to-one
               correspondences. That is what makes it useful when the moving and fixed images come from different
-              modalities: a visible-light photograph and an X-ray, thermal or XRF element map can show entirely
-              different features, yet their intensities are still statistically dependent when the images are
-              aligned.
+              modalities: a visible-light (RGB) photograph and an X-ray, thermal or XRF element map can show
+              entirely different features, yet their intensities are still statistically dependent when the
+              images are aligned.
             </p>
             <div className="guide-grid guide-grid--2">
               <div className="guide-card">
@@ -645,6 +645,8 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
                   MI is expensive because it is built from a joint intensity histogram, marginals and entropy
                   sums. In the search, every candidate needs its own histogram work; the NCC kernel only needs five
                   running sums. That is why MI runs are substantially slower and why the MI objective is opt-in.
+                  The payoff is robustness in exactly the cases where feature matching has nothing reliable to
+                  match.
                 </p>
               </div>
             </div>
@@ -661,7 +663,7 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
               mutual information. The modalities may share no common features, so the feature-based methods used
               in art investigation are often ineffective here. Their method scores transformations by the average
               MI across a stack of element maps and progressively refines the alignment.{' '}
-              <span className="dim">doi:10.1117/12.2673427</span>
+              <a href="https://doi.org/10.1117/12.2673427" target="_blank" rel="noreferrer">doi:10.1117/12.2673427</a>
             </div>
             <div className="guide-grid guide-grid--2">
               <div className="guide-card">

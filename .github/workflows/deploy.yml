@@ -18,8 +18,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      # project site path: https://nikhedonia.net/mi-align-web/
-      VITE_BASE: /mi-align-web/
+      # project site path: https://nikhedonia.net/mi-align/
+      VITE_BASE: /mi-align/
       # repository secret; leave unset to disable analytics
       VITE_GA_MEASUREMENT_ID: ${{ secrets.GA_MEASUREMENT_ID }}
     steps:

@@ -96,7 +96,11 @@ histogram is drawn next to it and tightens into a diagonal as the images line up
 can drive the search itself: set the objective to `MI (NMI)` in the search panel. That path is
 opt-in and much slower than NCC because it clears and updates 1,024 bins for every candidate.
 Switching the objective resets the detail pyramid and re-runs the root search, since scores from the
-two metrics are not comparable.
+two metrics are not comparable. MI is especially useful for multimodal pairs where feature-based
+matching has no reliable correspondences — for example a visible-light image against an X-ray or
+XRF element map. See [Villafañe et al., Proc. SPIE 12620, 1262004
+(2023)](https://doi.org/10.1117/12.2673427) for a worked example registering MA-XRF element maps of
+paintings to visible images.
 
 **Overlay modes** — blend, absolute difference, checkerboard, A only, B only.
 
@@ -145,30 +149,33 @@ derived analytically from the two view matrices, then verified in the test suite
 The production site is built for:
 
 ```text
-https://nikhedonia.net/mi-align-web/
+https://nikhedonia.net/mi-align/
 ```
 
 `.github/workflows/deploy.yml` runs on every push to `main` or `master` (and manually via
 **Run workflow**):
 
 1. installs with `npm ci`,
-2. typechecks and builds the production bundle with Vite base `/mi-align-web/`,
+2. typechecks and builds the production bundle with Vite base `/mi-align/`,
 3. uploads `dist/` (including `.nojekyll`) as a GitHub Pages artifact,
 4. deploys through the `github-pages` environment.
 
 To enable it in the repository, open **Settings → Pages** and set the source to **GitHub Actions**.
 
-The `/mi-align-web/` path assumes that `nikhedonia.net` is configured as the custom domain on the
+The repository must be named `mi-align` for the `/mi-align/` path to match. If the GitHub repository
+still uses the old name, rename it or change `VITE_BASE` in the workflow to the actual repository name.
+
+The `/mi-align/` path assumes that `nikhedonia.net` is configured as the custom domain on the
 **user/organization Pages site** (`nikhedonia.github.io`). Project sites inherit the custom domain
 and are served under `/<repository>/`. This repository therefore does **not** include a `CNAME` file:
 adding one to a project site would make GitHub Pages serve that project at the domain root instead of
-`/mi-align-web/`.
+`/mi-align/`.
 
 To reproduce the deployed asset paths locally:
 
 ```bash
-VITE_BASE=/mi-align-web/ npm run build
-VITE_BASE=/mi-align-web/ npm run preview
+VITE_BASE=/mi-align/ npm run build
+VITE_BASE=/mi-align/ npm run preview
 ```
 
 The dev server and plain `npm run build` use `/`.
