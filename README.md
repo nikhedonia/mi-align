@@ -162,8 +162,8 @@ https://nikhedonia.net/mi-align/
 
 To enable it in the repository, open **Settings → Pages** and set the source to **GitHub Actions**.
 
-The repository must be named `mi-align` for the `/mi-align/` path to match. If the GitHub repository
-still uses the old name, rename it or change `VITE_BASE` in the workflow to the actual repository name.
+This repository is named `mi-align`, so the GitHub Pages project path `/mi-align/` matches the
+`VITE_BASE` in the workflow. If the repository is renamed, update `VITE_BASE` to the new name.
 
 The `/mi-align/` path assumes that `nikhedonia.net` is configured as the custom domain on the
 **user/organization Pages site** (`nikhedonia.github.io`). Project sites inherit the custom domain
