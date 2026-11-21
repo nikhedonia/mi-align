@@ -565,10 +565,10 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
               </div>
             </div>
             <div className="guide-callout">
-              <strong>NCC is the default search objective.</strong> The dense scan uses NCC because it is cheap and
-              precise for the examples. You can switch the search to an entropy-based objective (normalised MI)
-              in the search panel — it is much slower, but more robust to brightness and modality changes. MI is
-              always available as the live readout for the transform currently on screen.
+              <strong>NCC is cheap and precise.</strong> It is a good fit when the images share a roughly linear
+              intensity relationship. An entropy-based objective (normalised MI) is more robust to brightness and
+              modality changes, but costs more. MI is also available as a live readout for the transform currently
+              on screen.
             </div>
           </section>
 
@@ -576,10 +576,9 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
             <p className="guide-section__eyebrow">03 · Joint mutual information</p>
             <h2>Do the two images tell you about each other?</h2>
             <p>
-              <strong>This is both a readout and an entropy-based search objective.</strong> By default the
-              brute-force scan and the heatmap are scored with NCC − penalty. Switch <em>Objective</em> to
-              <em>MI (NMI)</em> in the search panel to score every candidate with normalised MI − penalty instead.
-              MI is also measured separately for the transform currently on screen.
+              <strong>MI can be both a readout and an entropy-based search objective.</strong> As an objective, it
+              scores each candidate with normalised MI − penalty. It is more robust to brightness and modality
+              changes than NCC, but costs more. The panel also reports MI for the transform currently on screen.
             </p>
             <p>
               Mutual information asks a different question from correlation. Not “do the intensities rise
@@ -601,7 +600,7 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
             </p>
             <Formula>NMI = 2 · I(A;B) / (H(A) + H(B))</Formula>
             <p>
-              When the entropy-based objective is selected, the search score is
+              With an entropy-based objective, the search score is
               <code>NMI − λ · (1 − overlap)</code>. NMI is
               bounded, so it compares candidates with different overlap more fairly than raw MI in bits; the panel
               still reports both.
@@ -672,8 +671,9 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
               RANSAC are fast, precise and well understood. Entropy-based methods become the better tool when the
               correspondence assumption itself is the problem: cross-modality pairs, features that are not
               shared, or too many false positives for robust estimation. The price is the joint histogram and
-              entropy sums: every candidate needs its own 32×32 histogram instead of five running sums, which is
-              why it is much slower than NCC.
+              entropy sums: every candidate needs its own 32×32 histogram instead of five running sums. NCC is
+              cheaper, but may be less effective when the correspondence assumption fails; entropy-based methods
+              can be more effective, but they cost more.
             </div>
             <div className="guide-callout">
               <strong>Worked example: multimodal artwork registration.</strong>{' '}
@@ -706,8 +706,8 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
                 <p>
                   The measurement kernel bins both images into 32 intensity levels, builds a 32×32 joint histogram
                   in workgroup memory with atomics, derives the marginals, and reports MI in bits plus both
-                  entropies. The histogram is drawn next to the value. The entropy-based search objective uses the
-                  same histogram, but one workgroup per candidate.
+                  entropies. The histogram is drawn next to the value. An entropy-based search can use the same
+                  histogram, with one workgroup per candidate.
                 </p>
               </div>
             </div>
@@ -755,9 +755,10 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
               workgroups in flight and hide memory latency.
             </p>
             <p>
-              The entropy-based MI objective keeps the same workgroup-per-candidate shape, but gives every
-              candidate a private 32×32 joint histogram. That means clearing and atomically updating 1,024 bins
-              per candidate instead of five sums, which is why it is much slower than NCC.
+              An entropy-based MI objective can keep the same workgroup-per-candidate shape, but each candidate
+              needs its own 32×32 joint histogram: clearing and atomically updating 1,024 bins instead of five
+              sums. NCC is cheaper, but may be less effective when the intensity relationship is not linear or
+              the images come from different modalities.
             </p>
             <p>
               This is why the app uses WebGPU rather than WebGL. A WebGL fragment shader is tied to the pixel it
@@ -781,9 +782,9 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
               <div className="guide-card">
                 <h3>MI kernel</h3>
                 <p>
-                  One workgroup for a single transform (the live readout), or one workgroup per candidate when the
-                  entropy-based objective is selected. Builds a 32×32 joint histogram with atomics, then reduces
-                  MI, NMI, entropies, NCC and overlap.
+                  One workgroup for a single transform (the live readout), or one workgroup per candidate when an
+                  entropy-based objective is used. Builds a 32×32 joint histogram with atomics, then reduces MI,
+                  NMI, entropies, NCC and overlap.
                 </p>
               </div>
               <div className="guide-card">
@@ -914,10 +915,9 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
               <div className="guide-card">
                 <h3>Choosing an objective</h3>
                 <p>
-                  <strong>NCC</strong> is the fast default. <strong>MI (NMI)</strong> swaps the per-candidate score
-                  for normalised mutual information, which shrugs off monotonic brightness changes. Expect a much
-                  longer run: every candidate needs its own joint histogram. Switching objective resets the detail
-                  pyramid and re-runs the root search.
+                  <strong>NCC</strong> is cheaper. <strong>MI (NMI)</strong> swaps the per-candidate score for
+                  normalised mutual information, which is more robust to monotonic brightness changes and different
+                  modalities. Expect a longer run: every candidate needs its own joint histogram.
                 </p>
               </div>
             </div>

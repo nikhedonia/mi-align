@@ -36,13 +36,13 @@ examples. Every example ships with an exact ground truth transform, so the error
 | `a`      | aspect (sx/sy)                              |
 | `sh`     | shear                                       |
 
-The number of candidates is the product of the enabled axes' step counts. By default each candidate
-is scored against image B with a zero-mean NCC over a fixed set of sampled source pixels, minus an
-overlap penalty. One workgroup per candidate, 128 invocations striding over the samples, tree-reduced
-in shared memory. Batches of 8192 candidates stream through the GPU with a progress bar. The search
-panel can switch the objective to **mutual information** (`NMI − penalty`); that kernel gives every
-candidate its own 32×32 joint histogram, so it is much slower but tolerant of monotonic intensity
-changes and different imaging modalities.
+The number of candidates is the product of the enabled axes' step counts. Candidates are scored
+against image B with either a zero-mean NCC over a fixed set of sampled source pixels, minus an
+overlap penalty, or an entropy-based mutual-information objective (`NMI − penalty`). One workgroup per
+candidate, 128 invocations striding over the samples, tree-reduced in shared memory. Batches of 8192
+candidates stream through the GPU with a progress bar. NCC is cheaper; MI can be more effective for
+monotonic intensity changes and different imaging modalities, but each candidate needs its own 32×32
+joint histogram, so it costs more.
 
 **Stochastic multi-start** — optionally, draw `N` random candidates, keep the `K` best that are far
 apart, then run a batched compass search from every seed (all seeds probe all axes in a single
@@ -94,11 +94,11 @@ in workgroup memory and reports MI in bits, normalised MI, both entropies, NCC a
 insensitive to monotonic brightness changes, so it is the honest multimodal readout; the joint
 histogram is drawn next to it and tightens into a diagonal as the images line up. The same histogram
 can drive the search itself: set the objective to `MI (NMI)` in the search panel. That
-entropy-based path is much slower than NCC because it clears and updates 1,024 bins for every candidate.
-Switching the objective resets the detail pyramid and re-runs the root search, since scores from the
-two metrics are not comparable. MI is especially useful for multimodal pairs where feature-based
-matching has no reliable correspondences — for example a visible-light image against an X-ray or
-XRF element map. See [Villafañe et al., Proc. SPIE 12620, 1262004
+entropy-based path is more expensive than NCC because it clears and updates 1,024 bins for every
+candidate. NCC is cheaper, but may be less effective when the intensity relationship is not linear or
+the images are multimodal. MI is especially useful for multimodal pairs where feature-based matching
+has no reliable correspondences — for example a visible-light image against an X-ray or XRF element
+map. See [Villafañe et al., Proc. SPIE 12620, 1262004
 (2023)](https://doi.org/10.1117/12.2673427) for a worked example registering MA-XRF element maps of
 paintings to visible images.
 

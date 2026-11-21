@@ -182,7 +182,7 @@ export function SearchPanel({
           className={cfg.objective === 'ncc' ? 'active' : ''}
           onClick={() => onObjective('ncc')}
           disabled={running}
-          title="Zero-mean NCC minus the overlap penalty — the fast default"
+          title="Zero-mean NCC minus the overlap penalty — cheaper, no histogram"
         >
           NCC (fast)
         </button>
@@ -198,9 +198,8 @@ export function SearchPanel({
       <p className="hint">
         {cfg.objective === 'mi'
           ? 'Each candidate builds its own 32×32 joint histogram. The entropy-based MI objective is much more robust to brightness and modality changes, but far slower than NCC.'
-          : 'Five sums per candidate, no histogram. NCC is the fast default and works well for the generated examples.'}
+          : 'Five sums per candidate, no histogram. NCC is cheaper and works well for the generated examples.'}
       </p>
-      <p className="hint tight">Switching objective resets the detail pyramid and re-runs the root search.</p>
       {cfg.objective === 'mi' ? (
         <div className="warn">
           Entropy-based MI scoring is expensive: expect a much longer run, especially above a few thousand candidates. Reduce
