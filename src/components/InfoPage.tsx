@@ -763,8 +763,10 @@ export function InfoPage({ onBack, onNew, onExample }: InfoPageProps) {
             <p>
               This is why the app uses WebGPU rather than WebGL. A WebGL fragment shader is tied to the pixel it
               renders and has no compute stage, storage buffers, workgroup shared memory, atomics or arbitrary
-              scatter; general computation becomes a chain of render-to-texture passes. The search here needs one
-              workgroup per candidate, a shared reduction and, for MI, a per-candidate histogram with atomics.
+              scatter. General computation becomes a chain of shader programs and render targets, with textures
+              ping-ponged between passes; float render targets are an extension, so values are often packed into
+              RGBA8 bytes and unpacked again. The search here needs one workgroup per candidate, a shared
+              reduction and, for MI, a per-candidate histogram with atomics.
               WebGPU exposes those primitives directly, so the programming model matches the computation:
               dispatch a workgroup per candidate, stride lanes over samples, reduce in shared memory and write one
               score row. The companion article{' '}
